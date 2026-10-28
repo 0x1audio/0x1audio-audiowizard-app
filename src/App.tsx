@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CheckCircleIcon, FileAudioIcon, FolderOpenIcon, PlusIcon, UploadSimpleIcon, WarningCircleIcon, XIcon } from "@phosphor-icons/react"
 import {
   Button,
@@ -12,15 +12,11 @@ import {
   Label,
   Slider,
   Spinner,
-  Tabs,
-  TabsList,
-  TabsTab,
 } from "@0x1audio/design-system"
 import { host } from "@0x1audio/sdk/page"
 
 import { basename, channels, duration, rate, useDrop } from "./drop.ts"
-
-type Transients = "crisp" | "mixed" | "smooth"
+import { Waveform } from "./wave.tsx"
 
 interface Track {
   path: string
@@ -31,12 +27,13 @@ interface Track {
   channels?: number
   duration?: number
   detected?: number | null
+  peaks?: number[]
   sourceBpm: string
   targetBpm: string
   pitch: number
   formant: number
-  transients: Transients
-  preview?: { path: string; signature: string }
+  shaping?: boolean
+  shaped?: { signature: string; path: string; duration: number; peaks: number[] }
 }
 
 interface Job<T> {
@@ -52,6 +49,13 @@ interface Analysis {
   channels: number
   duration: number
   bpm: number | null
+  peaks: number[]
+}
+
+interface Heard {
+  path: string
+  duration: number
+  peaks: number[]
 }
 
 interface Rendered {
@@ -68,12 +72,6 @@ const formats = [
   { value: "mp3", label: "MP3, 320 kb/s" },
 ]
 
-const characters: Array<{ value: Transients; label: string; hint: string }> = [
-  { value: "crisp", label: "Crisp", hint: "Keeps drums and attacks sharp." },
-  { value: "mixed", label: "Mixed", hint: "Sharp attacks, smoother sustained notes." },
-  { value: "smooth", label: "Smooth", hint: "Best for vocals, pads, and strings." },
-]
-
 export function App() {
   const [tracks, setTracks] = useState<Track[]>([])
   const [selected, setSelected] = useState("")
@@ -82,8 +80,6 @@ export function App() {
   const [busy, setBusy] = useState("")
   const [results, setResults] = useState<Rendered[]>([])
   const [message, setMessage] = useState("")
-  const original = useRef<HTMLAudioElement>(null)
-  const preview = useRef<HTMLAudioElement>(null)
   const known = useRef(new Set<string>())
 
   const dragging = useDrop((paths) => add(paths), setMessage)
@@ -108,7 +104,6 @@ export function App() {
         targetBpm: "",
         pitch: 0,
         formant: 0,
-        transients: "crisp" as const,
       })),
     ])
     setSelected(fresh[0])
@@ -132,6 +127,7 @@ export function App() {
         channels: job.result.channels,
         duration: job.result.duration,
         detected: job.result.bpm,
+        peaks: job.result.peaks,
         sourceBpm: bpm,
         targetBpm: bpm,
       })
@@ -160,7 +156,62 @@ export function App() {
     if (picked?.[0]) setOutput(picked[0])
   }
 
-  async function render(item: Track, previewing: boolean) {
+  useEffect(() => {
+    if (!track || track.status !== "ready" || !track.peaks?.length) return
+    const problem = tempoProblem(track)
+    if (problem) {
+      setMessage(problem)
+      return
+    }
+    const sig = signature(track)
+    if (neutral(track) || track.shaped?.signature === sig) {
+      if (track.shaping) update(track.path, { shaping: false })
+      return
+    }
+    const item = track
+    let aborted = false
+    let jobId = ""
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const bridge = host()
+        if (!bridge || aborted) return
+        update(item.path, { shaping: true })
+        setMessage("")
+        try {
+          const created = await bridge.call<{ id: string }>("listen", {
+            path: item.path,
+            pitch: item.pitch,
+            formant: item.formant,
+            source_bpm: Number(item.sourceBpm) || null,
+            target_bpm: Number(item.targetBpm) || null,
+          })
+          jobId = created.id
+          if (aborted) {
+            void bridge.call("cancel", { id: jobId })
+            return
+          }
+          const job = await wait<Heard>(jobId)
+          if (aborted || job.cancelled) return
+          if (job.error || !job.result) throw new Error(job.error ?? "Could not update the waveform.")
+          update(item.path, {
+            shaping: false,
+            shaped: { signature: sig, path: job.result.path, duration: job.result.duration, peaks: job.result.peaks },
+          })
+        } catch (error) {
+          if (aborted) return
+          update(item.path, { shaping: false })
+          setMessage(error instanceof Error ? error.message : "Could not update the waveform.")
+        }
+      })()
+    }, 400)
+    return () => {
+      aborted = true
+      window.clearTimeout(timer)
+      if (jobId) void host()?.call("cancel", { id: jobId })
+    }
+  }, [track?.path, track?.status, track?.peaks, track?.pitch, track?.formant, track?.sourceBpm, track?.targetBpm, track?.shaped?.signature])
+
+  async function render(item: Track) {
     const bridge = host()
     if (!bridge) throw new Error("Open this app in 0x1audio.")
     const { id } = await bridge.call<{ id: string }>("render", {
@@ -169,33 +220,12 @@ export function App() {
       formant: item.formant,
       source_bpm: Number(item.sourceBpm) || null,
       target_bpm: Number(item.targetBpm) || null,
-      transients: item.transients,
-      preview: previewing,
-      start: previewing ? (original.current?.currentTime ?? 0) : 0,
-      length: 30,
       format,
       output,
     })
     const job = await wait<Rendered>(id, (state) => setBusy(state.stage))
     if (job.error || !job.result) throw new Error(job.error ?? "Something went wrong.")
     return job.result
-  }
-
-  async function listen() {
-    if (!track || track.status !== "ready") return
-    const problem = tempoProblem(track)
-    if (problem) return setMessage(problem)
-    setBusy("Changing")
-    setMessage("")
-    try {
-      const done = await render(track, true)
-      original.current?.pause()
-      update(track.path, { preview: { path: done.path, signature: signature(track) } })
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Something went wrong.")
-    } finally {
-      setBusy("")
-    }
   }
 
   async function exportTracks(items: Track[]) {
@@ -206,7 +236,7 @@ export function App() {
     try {
       for (const [index, item] of ready.entries()) {
         setBusy(ready.length > 1 ? `${item.name} (${index + 1} of ${ready.length})` : "Changing")
-        const done = await render(item, false)
+        const done = await render(item)
         setResults((current) => [done, ...current])
       }
     } catch (error) {
@@ -287,24 +317,18 @@ export function App() {
         </section>
       )}
 
-      {track?.status === "ready" ? (
-        <Editor
+      {track?.status === "ready" && track.peaks?.length && track.duration ? (
+        <Waveform
           key={track.path}
-          track={track}
-          disabled={working}
-          original={original}
-          preview={preview}
-          onChange={(patch) => update(track.path, patch)}
+          src={fileUrl(shown(track).path)}
+          peaks={shown(track).peaks}
+          duration={shown(track).duration}
+          updating={Boolean(track.shaping)}
         />
       ) : null}
 
       {track?.status === "ready" ? (
-        <div className="flex flex-col gap-2">
-          <Button variant="outline" className="h-12 w-full text-base" disabled={working} onClick={() => void listen()}>
-            {track.preview ? "Preview again" : "Preview 30 seconds"}
-          </Button>
-          <p className="text-xs text-muted-foreground">The preview starts where the original player is.</p>
-        </div>
+        <Editor key={track.path} track={track} disabled={working} onChange={(patch) => update(track.path, patch)} />
       ) : null}
 
       {ready.length ? (
@@ -381,24 +405,14 @@ export function App() {
 function Editor({
   track,
   disabled,
-  original,
-  preview,
   onChange,
 }: {
   track: Track
   disabled: boolean
-  original: RefObject<HTMLAudioElement | null>
-  preview: RefObject<HTMLAudioElement | null>
   onChange: (patch: Partial<Track>) => void
 }) {
-  const changed = track.pitch !== 0 || track.formant !== 0 || track.targetBpm !== track.sourceBpm
-  const stale = track.preview && track.preview.signature !== signature(track)
+  const changed = !neutral(track)
   const speed = tempo(track)
-  const character = characters.find((item) => item.value === track.transients) ?? characters[0]
-
-  useEffect(() => {
-    if (track.preview) void preview.current?.play().catch(() => {})
-  }, [track.preview, preview])
 
   function scaleSource(factor: number) {
     const source = Number(track.sourceBpm)
@@ -408,30 +422,12 @@ function Editor({
   }
 
   return (
-    <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Listen</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <Player label="Original" src={fileUrl(track.path)} audio={original} other={preview} />
-          {track.preview ? (
-            <Player
-              label={stale ? "Preview (settings changed since)" : "Preview"}
-              src={fileUrl(track.preview.path)}
-              audio={preview}
-              other={original}
-            />
-          ) : null}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div className="flex flex-col gap-1.5">
-            <CardTitle>Change</CardTitle>
-            <CardDescription>Formant moves the character of a voice without moving its notes.</CardDescription>
-          </div>
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div className="flex flex-col gap-1.5">
+          <CardTitle>Change</CardTitle>
+          <CardDescription>The waveform updates as you move these.</CardDescription>
+        </div>
           <Button
             variant="link"
             className="h-6 px-0"
@@ -487,42 +483,8 @@ function Editor({
             {track.detected ? `Detected ${track.detected} BPM.` : "No clear beat found. Type the BPM if you know it."}{" "}
             {speed && speed !== 1 ? `Plays at ${Math.round(speed * 1000) / 10}% speed.` : ""}
           </p>
-
-          <div className="flex flex-col gap-2">
-            <Label>Character</Label>
-            <Tabs value={track.transients} onValueChange={(value) => onChange({ transients: value as Transients })}>
-              <TabsList>
-                {characters.map((item) => (
-                  <TabsTab key={item.value} value={item.value} disabled={disabled}>
-                    {item.label}
-                  </TabsTab>
-                ))}
-              </TabsList>
-            </Tabs>
-            <p className="text-xs text-muted-foreground">{character.hint}</p>
-          </div>
         </CardContent>
       </Card>
-    </>
-  )
-}
-
-function Player({
-  label,
-  src,
-  audio,
-  other,
-}: {
-  label: string
-  src: string
-  audio: RefObject<HTMLAudioElement | null>
-  other: RefObject<HTMLAudioElement | null>
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <Label>{label}</Label>
-      <audio ref={audio} src={src} controls preload="metadata" className="w-full" onPlay={() => other.current?.pause()} />
-    </div>
   )
 }
 
@@ -587,8 +549,18 @@ function tempoProblem(track: Track) {
   return ""
 }
 
+function neutral(track: Track) {
+  return track.pitch === 0 && track.formant === 0 && track.targetBpm === track.sourceBpm
+}
+
+function shown(track: Track) {
+  const current = !neutral(track) && track.shaped?.signature === signature(track) ? track.shaped : track.shaped
+  if (!neutral(track) && current) return { path: current.path, peaks: current.peaks, duration: current.duration }
+  return { path: track.path, peaks: track.peaks ?? [], duration: track.duration ?? 0 }
+}
+
 function signature(track: Track) {
-  return JSON.stringify([track.pitch, track.formant, track.sourceBpm, track.targetBpm, track.transients])
+  return JSON.stringify([track.pitch, track.formant, track.sourceBpm, track.targetBpm])
 }
 
 function trim(value: number) {

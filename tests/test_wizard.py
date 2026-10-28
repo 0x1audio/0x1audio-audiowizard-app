@@ -14,7 +14,7 @@ OUT = ROOT / "tests" / "_out"
 sys.path.insert(0, str(ROOT))
 
 from audio import decode, encode  # noqa: E402
-from wizard import Change, detect_bpm, label, process  # noqa: E402
+from wizard import Change, detect_bpm, label, outline, process  # noqa: E402
 
 RATE = 44100
 
@@ -100,6 +100,18 @@ class ProcessTest(unittest.TestCase):
         loud = voice(1.0) * 9
         self.assertLessEqual(float(np.max(np.abs(process(loud, RATE, Change(pitch=3))))), 0.999 + 1e-6)
 
+    def test_outline_follows_the_loud_part(self):
+        audio = np.zeros((1, RATE), np.float32)
+        audio[0, RATE // 2 :] = 0.5
+        peaks = outline(audio, bars=10)
+        self.assertEqual(len(peaks), 10)
+        self.assertGreater(max(peaks[5:]), max(peaks[:5]))
+
+    def test_fast_render_keeps_the_tempo(self):
+        audio = voice(1.0)
+        changed = process(audio, RATE, Change(tempo=0.5), fast=True)
+        self.assertAlmostEqual(changed.shape[1] / audio.shape[1], 2.0, delta=0.05)
+
     def test_rejects_wild_tempo(self):
         with self.assertRaises(ValueError):
             process(voice(1.0), RATE, Change(tempo=5))
@@ -162,8 +174,15 @@ class WorkerTest(unittest.TestCase):
         job = self.wait(worker, worker.analyze(SimpleNamespace(body={"path": song}))["id"])
         self.assertIsNone(job["error"])
         self.assertEqual(job["result"]["bpm"], 120)
+        self.assertEqual(len(job["result"]["peaks"]), 900)
+        self.assertGreater(max(job["result"]["peaks"]), 0)
 
         body = {"path": song, "pitch": 3, "formant": -2, "source_bpm": 120, "target_bpm": 128}
+        heard = self.wait(worker, worker.listen(SimpleNamespace(body=body))["id"])
+        self.assertIsNone(heard["error"])
+        self.assertAlmostEqual(heard["result"]["duration"], job["result"]["duration"] * 120 / 128, delta=0.15)
+        self.assertEqual(len(heard["result"]["peaks"]), 900)
+        self.assertTrue(Path(heard["result"]["path"]).is_relative_to(OUT / "data" / "previews"))
         preview = self.wait(worker, worker.render(SimpleNamespace(body={**body, "preview": True, "start": 2, "length": 4}))["id"])
         self.assertIsNone(preview["error"])
         self.assertTrue(Path(preview["result"]["path"]).is_relative_to(OUT / "data" / "previews"))

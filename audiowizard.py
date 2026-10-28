@@ -15,7 +15,7 @@ from pathlib import Path
 from ox1audio import serve
 
 from audio import decode, encode, free_path
-from wizard import Change, detect_bpm, label, process
+from wizard import Change, detect_bpm, label, outline, process
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -37,12 +37,7 @@ def analyze(call):
 def render(call):
     body = call.body if isinstance(call.body, dict) else {}
     path = _path(body.get("path"))
-    change = Change(
-        pitch=_clamp(body.get("pitch"), -24, 24),
-        formant=_clamp(body.get("formant"), -12, 12),
-        tempo=_tempo(body.get("source_bpm"), body.get("target_bpm")),
-        transients=str(body.get("transients") or "crisp"),
-    )
+    change = _change(body)
     preview = bool(body.get("preview"))
     options = {
         "preview": preview,
@@ -54,6 +49,16 @@ def render(call):
     }
     job = _reserve("Reading")
     threading.Thread(target=_render, args=(job, path, change, options), daemon=True).start()
+    return {"id": job}
+
+
+def listen(call):
+    """Render the whole file quickly so the page can redraw its waveform."""
+    body = call.body if isinstance(call.body, dict) else {}
+    path = _path(body.get("path"))
+    change = _change(body)
+    job = _reserve("Changing")
+    threading.Thread(target=_listen, args=(job, path, change), daemon=True).start()
     return {"id": job}
 
 
@@ -75,12 +80,46 @@ def cancel(call):
     return {"ok": True}
 
 
+def _listen(job: str, path: str, change: Change) -> None:
+    try:
+        audio, info = _load(path)
+        if _stopped(job):
+            return
+        changed = process(audio, info.rate, change, fast=True)
+        if _stopped(job):
+            return
+        written = encode(changed, info.rate, _preview_path(path, change, {}), "wav")
+        if _stopped(job):
+            written.unlink(missing_ok=True)
+            return
+        _prune_previews(written.parent)
+        _finish(
+            job,
+            result={
+                "path": str(written),
+                "duration": changed.shape[1] / info.rate,
+                "peaks": outline(changed),
+            },
+        )
+    except Exception as exc:
+        _finish(job, error=str(exc))
+
+
+def _change(body: dict) -> Change:
+    return Change(
+        pitch=_clamp(body.get("pitch"), -24, 24),
+        formant=_clamp(body.get("formant"), -12, 12),
+        tempo=_tempo(body.get("source_bpm"), body.get("target_bpm")),
+        transients="crisp",
+    )
+
+
 def _analyze(job: str, path: str) -> None:
     try:
         audio, info = _load(path)
         _update(job, stage="Finding the tempo")
         bpm = detect_bpm(audio, info.rate)
-        _finish(job, result={**info.json(), "bpm": bpm})
+        _finish(job, result={**info.json(), "bpm": bpm, "peaks": outline(audio)})
     except Exception as exc:
         _finish(job, error=str(exc))
 
@@ -149,7 +188,9 @@ def _data_root() -> Path:
 
 
 def _preview_path(path: str, change: Change, options: dict) -> Path:
-    key = f"{path}|{change}|{options['start']:.2f}|{options['length']:.2f}|{time.time_ns()}"
+    start = float(options.get("start") or 0)
+    length = float(options.get("length") or 0)
+    key = f"{path}|{change}|{start:.2f}|{length:.2f}|{time.time_ns()}"
     return _data_root() / "previews" / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.wav"
 
 
@@ -218,4 +259,4 @@ def _tempo(source, target) -> float:
 
 
 if __name__ == "__main__":
-    serve({"analyze": analyze, "render": render, "status": status, "cancel": cancel})
+    serve({"analyze": analyze, "listen": listen, "render": render, "status": status, "cancel": cancel})

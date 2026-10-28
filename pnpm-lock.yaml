@@ -23,6 +23,9 @@ importers:
       react-dom:
         specifier: ^19.2.6
         version: 19.3.1(react@19.3.1)
+      wavesurfer.js:
+        specifier: ^8.0.3
+        version: 8.0.3
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4
@@ -822,6 +825,9 @@ packages:
       yaml:
         optional: true
 
+  wavesurfer.js@8.0.3:
+    resolution: {integrity: sha512-DLRSw/NoIlyFxMzmiGlwGJaEn44p8DiCRyKYjbPxGa3QjdTrCxa0CvAH+/TEijrzcZ/w2GVt8wM80WFsPtnPVw==}
+
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
@@ -1443,5 +1449,7 @@ snapshots:
       '@types/node': 24.19.2
       fsevents: 2.3.3
       jiti: 2.7.0
+
+  wavesurfer.js@8.0.3: {}
 
   yallist@3.1.1: {}

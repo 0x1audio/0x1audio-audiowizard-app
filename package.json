@@ -1,7 +1,7 @@
 {
   "name": "audiowizard",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,8 @@
     "@0x1audio/sdk": "file:../0x1audio-sdk-ts",
     "@phosphor-icons/react": "^2.1.10",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "wavesurfer.js": "^8.0.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",

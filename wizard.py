@@ -25,8 +25,12 @@ class Change:
         return abs(self.pitch) < 1e-6 and abs(self.formant) < 1e-6 and abs(self.tempo - 1.0) < 1e-6
 
 
-def process(audio: np.ndarray, rate: int, change: Change) -> np.ndarray:
-    """Return a changed copy of ``audio``, shaped (channels, frames)."""
+def process(audio: np.ndarray, rate: int, change: Change, *, fast: bool = False) -> np.ndarray:
+    """Return a changed copy of ``audio``, shaped (channels, frames).
+
+    ``fast`` is the interactive render used to redraw the waveform. Export keeps
+    the slower, higher quality path.
+    """
     x = np.ascontiguousarray(audio, dtype=np.float32)
     if change.neutral() or x.shape[-1] == 0:
         return x.copy()
@@ -41,7 +45,8 @@ def process(audio: np.ndarray, rate: int, change: Change) -> np.ndarray:
         import soxr
 
         ratio = 2.0 ** (change.formant / 12.0)
-        x = np.ascontiguousarray(soxr.resample(x.T, rate * ratio, rate, quality="VHQ").T, dtype=np.float32)
+        quality = "HQ" if fast else "VHQ"
+        x = np.ascontiguousarray(soxr.resample(x.T, rate * ratio, rate, quality=quality).T, dtype=np.float32)
 
     stretch = change.tempo / ratio
     shift = change.pitch - change.formant
@@ -51,7 +56,7 @@ def process(audio: np.ndarray, rate: int, change: Change) -> np.ndarray:
             float(rate),
             stretch_factor=float(stretch),
             pitch_shift_in_semitones=float(shift),
-            high_quality=True,
+            high_quality=not fast,
             transient_mode=transients,
             preserve_formants=True,
         )
@@ -60,6 +65,25 @@ def process(audio: np.ndarray, rate: int, change: Change) -> np.ndarray:
     if peak > 0.999:
         x *= 0.999 / peak
     return x
+
+
+def outline(audio: np.ndarray, bars: int = 900) -> list[float]:
+    """Peak level of each slice, from 0 to 1, for drawing a waveform."""
+    mono = np.abs(np.asarray(audio, dtype=np.float32))
+    if mono.ndim == 2:
+        mono = mono.max(axis=0)
+    count = int(mono.size)
+    if count == 0:
+        return []
+    bars = max(1, min(bars, count))
+    edges = np.linspace(0, count, bars + 1, dtype=np.int64)
+    peaks = []
+    for start, end in zip(edges[:-1], edges[1:]):
+        if end <= start:
+            end = min(count, start + 1)
+        chunk = mono[int(start) : int(end)]
+        peaks.append(round(float(chunk.max()) if chunk.size else 0.0, 4))
+    return peaks
 
 
 def detect_bpm(audio: np.ndarray, rate: int, seconds: float = 90.0) -> float | None:
