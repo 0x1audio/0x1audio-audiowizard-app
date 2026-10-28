@@ -1,108 +1,38 @@
-"""Pitch, formant, and tempo changes built on Rubber Band (through pedalboard).
+"""What the worker works out about a track: its waveform, its tempo, and export names.
 
-Formant is moved on its own by resampling first, which shifts pitch, formants,
-and speed together, then letting Rubber Band put pitch and speed back while it
-keeps the new formants in place.
+Pitch, formant, and tempo changes happen in the page, live, with Signalsmith Stretch.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-TRANSIENTS = ("crisp", "mixed", "smooth")
 
-
-@dataclass(frozen=True)
-class Change:
-    pitch: float = 0.0
-    formant: float = 0.0
-    tempo: float = 1.0
-    transients: str = "crisp"
-
-    def neutral(self) -> bool:
-        return abs(self.pitch) < 1e-6 and abs(self.formant) < 1e-6 and abs(self.tempo - 1.0) < 1e-6
-
-
-def process(audio: np.ndarray, rate: int, change: Change, *, fast: bool = False) -> np.ndarray:
-    """Return a changed copy of ``audio``, shaped (channels, frames).
-
-    ``fast`` is the interactive render used to redraw the waveform. Export keeps
-    the slower, higher quality path.
-    """
-    x = np.ascontiguousarray(audio, dtype=np.float32)
-    if change.neutral() or x.shape[-1] == 0:
-        return x.copy()
-    if not 0.25 <= change.tempo <= 4.0:
-        raise ValueError("Keep the tempo between a quarter and four times the original.")
-    transients = change.transients if change.transients in TRANSIENTS else "crisp"
-
-    import pedalboard
-
-    ratio = 1.0
-    if abs(change.formant) > 1e-6:
-        import soxr
-
-        ratio = 2.0 ** (change.formant / 12.0)
-        quality = "HQ" if fast else "VHQ"
-        x = np.ascontiguousarray(soxr.resample(x.T, rate * ratio, rate, quality=quality).T, dtype=np.float32)
-
-    stretch = change.tempo / ratio
-    shift = change.pitch - change.formant
-    if abs(stretch - 1.0) > 1e-6 or abs(shift) > 1e-6:
-        x = pedalboard.time_stretch(
-            x,
-            float(rate),
-            stretch_factor=float(stretch),
-            pitch_shift_in_semitones=float(shift),
-            high_quality=not fast,
-            transient_mode=transients,
-            preserve_formants=True,
-        )
-    x = np.asarray(x, dtype=np.float32)
-    peak = float(np.max(np.abs(x))) if x.size else 0.0
-    if peak > 0.999:
-        x *= 0.999 / peak
-    return x
-
-
-def outline(audio: np.ndarray, bars: int = 900) -> list[float]:
-    """Peak level of each slice, from 0 to 1, for drawing a waveform."""
-    mono = np.abs(np.asarray(audio, dtype=np.float32))
-    if mono.ndim == 2:
-        mono = mono.max(axis=0)
-    count = int(mono.size)
-    if count == 0:
+def peaks(audio: np.ndarray, bars: int = 1000) -> list[float]:
+    """Loudest sample of each slice, from 0 to 1, for drawing a waveform."""
+    level = np.abs(audio).max(axis=0) if audio.ndim == 2 else np.abs(audio)
+    if level.size == 0:
         return []
-    bars = max(1, min(bars, count))
-    edges = np.linspace(0, count, bars + 1, dtype=np.int64)
-    peaks = []
-    for start, end in zip(edges[:-1], edges[1:]):
-        if end <= start:
-            end = min(count, start + 1)
-        chunk = mono[int(start) : int(end)]
-        peaks.append(round(float(chunk.max()) if chunk.size else 0.0, 4))
-    return peaks
+    bars = min(bars, level.size)
+    starts = np.arange(bars, dtype=np.int64) * level.size // bars
+    return np.round(np.maximum.reduceat(level, starts), 4).tolist()
 
 
 def detect_bpm(audio: np.ndarray, rate: int, seconds: float = 90.0) -> float | None:
     """Estimate the tempo from the first ``seconds`` of audio. ``None`` when there is no clear beat."""
-    mono = np.asarray(audio, dtype=np.float32)
-    if mono.ndim == 2:
-        mono = mono.mean(axis=0)
-    mono = mono[: int(rate * seconds)]
-    if rate > 24000:
-        import soxr
-
-        mono = soxr.resample(mono, rate, 22050)
-        rate = 22050
+    mono = audio[..., : int(rate * seconds)]
+    mono = mono.mean(axis=0) if mono.ndim == 2 else mono
+    # Beats live in the low end, so halving the rate by averaging pairs loses nothing that matters.
+    rate = float(rate)
+    while rate > 32000:
+        mono = mono[: mono.size // 2 * 2].reshape(-1, 2).mean(axis=1)
+        rate /= 2
     size, hop = 1024, 128
     if mono.size < size * 16:
         return None
 
-    frames = np.lib.stride_tricks.sliding_window_view(mono, size)[::hop]
-    spectrum = np.abs(np.fft.rfft(frames * np.hanning(size).astype(np.float32), axis=1)).astype(np.float32)
+    frames = np.lib.stride_tricks.sliding_window_view(mono.astype(np.float32), size)[::hop]
+    spectrum = np.abs(np.fft.rfft(frames * np.hanning(size).astype(np.float32), axis=1))
     flux = np.maximum(0.0, np.diff(np.log1p(100.0 * spectrum), axis=0)).sum(axis=1)
     fps = rate / hop
     width = max(1, int(fps * 0.4))
@@ -112,8 +42,8 @@ def detect_bpm(audio: np.ndarray, rate: int, seconds: float = 90.0) -> float | N
     flux -= flux.mean()
 
     n = flux.size
-    spectrum = np.fft.rfft(flux, 2 * n)
-    corr = np.fft.irfft(spectrum * np.conj(spectrum))[:n]
+    transformed = np.fft.rfft(flux, 2 * n)
+    corr = np.fft.irfft(transformed * np.conj(transformed))[:n]
     if corr[0] <= 0:
         return None
     corr /= corr[0]
@@ -142,15 +72,15 @@ def detect_bpm(audio: np.ndarray, rate: int, seconds: float = 90.0) -> float | N
     return float(whole) if abs(bpm - whole) <= 0.2 else round(bpm, 1)
 
 
-def label(change: Change, bpm: float | None) -> str:
+def label(pitch: float, formant: float, tempo: float, bpm: float | None) -> str:
     """The suffix that names an export, like ``pitch +3, formant -2, 128 BPM``."""
     parts = []
-    if abs(change.pitch) > 1e-6:
-        parts.append(f"pitch {_signed(change.pitch)}")
-    if abs(change.formant) > 1e-6:
-        parts.append(f"formant {_signed(change.formant)}")
-    if abs(change.tempo - 1.0) > 1e-6:
-        parts.append(f"{_number(bpm)} BPM" if bpm else f"{_number(change.tempo * 100)}% speed")
+    if abs(pitch) > 1e-6:
+        parts.append(f"pitch {_signed(pitch)}")
+    if abs(formant) > 1e-6:
+        parts.append(f"formant {_signed(formant)}")
+    if abs(tempo - 1.0) > 1e-6:
+        parts.append(f"{_number(bpm)} BPM" if bpm else f"{_number(tempo * 100)}% speed")
     return ", ".join(parts) or "copy"
 
 

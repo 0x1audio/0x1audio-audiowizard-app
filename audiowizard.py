@@ -1,233 +1,146 @@
-"""audioWizard worker. Analyze a file, then render previews and exports from it.
+"""audioWizard worker.
 
-Both are jobs the page polls, because long files can outlast a single call.
+The page changes pitch, formant, and tempo live in Web Audio. The worker turns
+files into samples the page can play, and the page's renders back into files.
+Samples travel through the app's data folder as raw float32, one whole channel
+after another, so neither side has to copy them through JSON.
+
+``open`` and ``save`` are jobs the page polls, because a long file can take
+longer than one call is allowed to.
 """
 
 from __future__ import annotations
 
 import hashlib
+import itertools
+import json
 import os
-import threading
-import time
-from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
 from ox1audio import serve
 
 from audio import decode, encode, free_path
-from wizard import Change, detect_bpm, label, outline, process
+from wizard import detect_bpm, label, peaks
 
-_jobs: dict[str, dict] = {}
-_lock = threading.Lock()
-_seq = 0
-_decoded: OrderedDict[tuple[str, float], tuple] = OrderedDict()
-_decode_lock = threading.Lock()
-KEEP_DECODED = 3
-KEEP_PREVIEWS = 24
+KEEP_TRACKS = 6
+FORMATS = ("wav", "aiff", "flac", "mp3")
 
-
-def analyze(call):
-    body = call.body if isinstance(call.body, dict) else {}
-    path = _path(body.get("path"))
-    job = _reserve("Reading")
-    threading.Thread(target=_analyze, args=(job, path), daemon=True).start()
-    return {"id": job}
+_pool = ThreadPoolExecutor(max_workers=2)
+_jobs: dict[str, Future] = {}
+_ids = itertools.count(1)
 
 
-def render(call):
-    body = call.body if isinstance(call.body, dict) else {}
-    path = _path(body.get("path"))
-    change = _change(body)
-    preview = bool(body.get("preview"))
-    options = {
-        "preview": preview,
-        "start": max(0.0, _number(body.get("start"), 0.0)),
-        "length": min(120.0, max(2.0, _number(body.get("length"), 30.0))),
-        "format": str(body.get("format") or "wav"),
-        "output": body.get("output") if isinstance(body.get("output"), str) and body.get("output") else None,
-        "bpm": _number(body.get("target_bpm"), 0.0) or None,
-    }
-    job = _reserve("Reading")
-    threading.Thread(target=_render, args=(job, path, change, options), daemon=True).start()
-    return {"id": job}
+def open_track(call):
+    """Decode a file into the data folder. The result says where its samples are."""
+    return _start(_open, _source(_body(call).get("path")))
 
 
-def listen(call):
-    """Render the whole file quickly so the page can redraw its waveform."""
-    body = call.body if isinstance(call.body, dict) else {}
-    path = _path(body.get("path"))
-    change = _change(body)
-    job = _reserve("Changing")
-    threading.Thread(target=_listen, args=(job, path, change), daemon=True).start()
-    return {"id": job}
+def save(call):
+    """Encode samples the page rendered into ``renders/`` and put the file next to the original."""
+    body = _body(call)
+    rendered = _data_file(body.get("samples"), "renders")
+    rate, channels = int(body.get("rate") or 0), int(body.get("channels") or 0)
+    if not 1000 <= rate <= 768000 or not 1 <= channels <= 32:
+        raise ValueError("Those samples are not audio.")
+    kind = body.get("format") if body.get("format") in FORMATS else "wav"
+    output = body.get("output")
+    name = label(_number(body.get("pitch")), _number(body.get("formant")), _number(body.get("tempo"), 1.0), _number(body.get("bpm")) or None)
+    return _start(_save, rendered, rate, channels, _source(body.get("source")), kind, output if isinstance(output, str) and output else None, name)
 
 
 def status(call):
-    body = call.body if isinstance(call.body, dict) else {}
-    with _lock:
-        job = _jobs.get(str(body.get("id")))
-        if job is None:
-            raise ValueError("That job is gone.")
-        return dict(job)
+    ident = str(_body(call).get("id"))
+    future = _jobs.get(ident)
+    if future is None:
+        raise ValueError("That job is gone.")
+    if not future.done():
+        return {"done": False}
+    del _jobs[ident]
+    error = future.exception()
+    return {"done": True, "error": str(error) if error else None, "result": None if error else future.result()}
 
 
-def cancel(call):
-    body = call.body if isinstance(call.body, dict) else {}
-    with _lock:
-        job = _jobs.get(str(body.get("id")))
-        if job and not job["done"]:
-            job.update(done=True, cancelled=True, stage="Stopped")
-    return {"ok": True}
+def _open(path: str) -> dict:
+    source = Path(path)
+    stamp = source.stat()
+    key = hashlib.sha1(f"{path}|{stamp.st_size}|{stamp.st_mtime_ns}".encode()).hexdigest()[:20]
+    folder = _data() / "tracks"
+    samples, about = folder / f"{key}.f32", folder / f"{key}.json"
+    if samples.is_file() and about.is_file():
+        os.utime(samples)
+        return json.loads(about.read_text())
+
+    audio, info = decode(path)
+    folder.mkdir(parents=True, exist_ok=True)
+    partial = samples.with_suffix(".part")
+    audio.tofile(partial)
+    partial.replace(samples)
+    result = {
+        "samples": f"tracks/{samples.name}",
+        "codec": info.codec,
+        "rate": info.rate,
+        "channels": audio.shape[0],
+        "frames": audio.shape[1],
+        "bpm": detect_bpm(audio, info.rate),
+        "peaks": peaks(audio),
+    }
+    about.write_text(json.dumps(result))
+    _prune(folder)
+    return result
 
 
-def _listen(job: str, path: str, change: Change) -> None:
+def _save(rendered: Path, rate: int, channels: int, source: str, kind: str, output: str | None, name: str) -> dict:
     try:
-        audio, info = _load(path)
-        if _stopped(job):
-            return
-        changed = process(audio, info.rate, change, fast=True)
-        if _stopped(job):
-            return
-        written = encode(changed, info.rate, _preview_path(path, change, {}), "wav")
-        if _stopped(job):
-            written.unlink(missing_ok=True)
-            return
-        _prune_previews(written.parent)
-        _finish(
-            job,
-            result={
-                "path": str(written),
-                "duration": changed.shape[1] / info.rate,
-                "peaks": outline(changed),
-            },
-        )
-    except Exception as exc:
-        _finish(job, error=str(exc))
+        audio = np.fromfile(rendered, dtype="<f4")
+    finally:
+        rendered.unlink(missing_ok=True)
+    audio = audio[: audio.size // channels * channels].reshape(channels, -1)
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    if peak > 0.999:
+        audio *= 0.999 / peak
+    original = Path(source)
+    folder = Path(output) if output else original.parent
+    target = folder / f"{original.stem} ({name}).{kind}"
+    written = encode(audio, rate, free_path(target, original), kind)
+    return {"path": str(written), "name": written.name}
 
 
-def _change(body: dict) -> Change:
-    return Change(
-        pitch=_clamp(body.get("pitch"), -24, 24),
-        formant=_clamp(body.get("formant"), -12, 12),
-        tempo=_tempo(body.get("source_bpm"), body.get("target_bpm")),
-        transients="crisp",
-    )
+def _prune(folder: Path) -> None:
+    kept = sorted(folder.glob("*.f32"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for old in kept[KEEP_TRACKS:]:
+        old.unlink(missing_ok=True)
+        old.with_suffix(".json").unlink(missing_ok=True)
 
 
-def _analyze(job: str, path: str) -> None:
-    try:
-        audio, info = _load(path)
-        _update(job, stage="Finding the tempo")
-        bpm = detect_bpm(audio, info.rate)
-        _finish(job, result={**info.json(), "bpm": bpm, "peaks": outline(audio)})
-    except Exception as exc:
-        _finish(job, error=str(exc))
+def _start(work, *args) -> dict:
+    ident = str(next(_ids))
+    _jobs[ident] = _pool.submit(work, *args)
+    return {"id": ident}
 
 
-def _render(job: str, path: str, change: Change, options: dict) -> None:
-    started = time.monotonic()
-    try:
-        audio, info = _load(path)
-        if options["preview"]:
-            first = int(options["start"] * info.rate)
-            if first >= audio.shape[1]:
-                first = 0
-            audio = audio[:, first : first + int(options["length"] * info.rate)]
-        if _stopped(job):
-            return
-        _update(job, stage="Changing")
-        changed = process(audio, info.rate, change)
-        if _stopped(job):
-            return
-        _update(job, stage="Saving")
-        if options["preview"]:
-            target = _preview_path(path, change, options)
-            written = encode(changed, info.rate, target, "wav")
-            _prune_previews(written.parent)
-        else:
-            stem = Path(info.path).stem
-            folder = Path(options["output"]) if options["output"] else Path(info.path).parent
-            ext = {"aiff": "aiff", "flac": "flac", "mp3": "mp3"}.get(options["format"], "wav")
-            target = folder / f"{stem} ({label(change, options['bpm'])}).{ext}"
-            written = encode(changed, info.rate, free_path(target, Path(info.path)), options["format"])
-        _finish(
-            job,
-            result={
-                "path": str(written),
-                "name": written.name,
-                "duration": changed.shape[1] / info.rate,
-                "elapsed": time.monotonic() - started,
-            },
-        )
-    except Exception as exc:
-        _finish(job, error=str(exc))
-
-
-def _load(path: str):
-    key = (path, os.path.getmtime(path))
-    with _decode_lock:
-        if key in _decoded:
-            _decoded.move_to_end(key)
-            return _decoded[key]
-        loaded = decode(path)
-        _decoded[key] = loaded
-        while len(_decoded) > KEEP_DECODED:
-            _decoded.popitem(last=False)
-        return loaded
-
-
-def _data_root() -> Path:
-    # The desktop sets this. The installed SDK is older than ox1audio.data, so the
-    # folder comes straight from the environment.
+def _data() -> Path:
+    # The desktop sets this. The SDK on older desktops has no ox1audio.data, so read it directly.
     value = os.environ.get("OX1_DATA", "").strip()
     if not value:
         raise RuntimeError("This app has no data folder.")
-    folder = Path(value)
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+    return Path(value)
 
 
-def _preview_path(path: str, change: Change, options: dict) -> Path:
-    start = float(options.get("start") or 0)
-    length = float(options.get("length") or 0)
-    key = f"{path}|{change}|{start:.2f}|{length:.2f}|{time.time_ns()}"
-    return _data_root() / "previews" / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.wav"
+def _data_file(value, folder: str) -> Path:
+    root = (_data() / folder).resolve()
+    path = (_data() / str(value or "")).resolve()
+    if path.parent != root or not path.is_file():
+        raise ValueError("Those samples are gone.")
+    return path
 
 
-def _prune_previews(folder: Path) -> None:
-    files = sorted(folder.glob("*.wav"), key=lambda item: item.stat().st_mtime, reverse=True)
-    for old in files[KEEP_PREVIEWS:]:
-        old.unlink(missing_ok=True)
+def _body(call) -> dict:
+    return call.body if isinstance(call.body, dict) else {}
 
 
-def _reserve(stage: str) -> str:
-    global _seq
-    with _lock:
-        _seq += 1
-        ident = str(_seq)
-        _jobs[ident] = {"stage": stage, "done": False, "cancelled": False, "error": None, "result": None}
-        return ident
-
-
-def _update(job: str, **fields) -> None:
-    with _lock:
-        if not _jobs[job]["done"]:
-            _jobs[job].update(fields)
-
-
-def _finish(job: str, **fields) -> None:
-    with _lock:
-        if _jobs[job]["done"]:
-            return
-        _jobs[job].update(done=True, stage="Done", **fields)
-
-
-def _stopped(job: str) -> bool:
-    with _lock:
-        return _jobs[job]["cancelled"]
-
-
-def _path(value) -> str:
+def _source(value) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("Choose an audio file.")
     path = Path(value)
@@ -236,27 +149,13 @@ def _path(value) -> str:
     return str(path.resolve())
 
 
-def _number(value, fallback: float) -> float:
+def _number(value, fallback: float = 0.0) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError):
         return fallback
-    return number if number == number and abs(number) != float("inf") else fallback
-
-
-def _clamp(value, low: float, high: float) -> float:
-    return min(high, max(low, _number(value, 0.0)))
-
-
-def _tempo(source, target) -> float:
-    source, target = _number(source, 0.0), _number(target, 0.0)
-    if source <= 0 or target <= 0:
-        return 1.0
-    ratio = target / source
-    if not 0.25 <= ratio <= 4.0:
-        raise ValueError("Keep the new BPM between a quarter and four times the original.")
-    return ratio
+    return number if np.isfinite(number) else fallback
 
 
 if __name__ == "__main__":
-    serve({"analyze": analyze, "listen": listen, "render": render, "status": status, "cancel": cancel})
+    serve({"open": open_track, "save": save, "status": status})

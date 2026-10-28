@@ -15,54 +15,20 @@ import {
 } from "@0x1audio/design-system"
 import { host } from "@0x1audio/sdk/page"
 
+import { load, open, save, type Opened, type Saved } from "./bridge.ts"
 import { basename, channels, duration, rate, useDrop } from "./drop.ts"
+import { Player, render, unchanged, type Change, type Samples } from "./engine.ts"
 import { Waveform } from "./wave.tsx"
 
 interface Track {
   path: string
   name: string
-  status: "reading" | "ready" | "failed"
+  opened?: Opened
   error?: string
-  rate?: number
-  channels?: number
-  duration?: number
-  detected?: number | null
-  peaks?: number[]
   sourceBpm: string
   targetBpm: string
   pitch: number
   formant: number
-  shaping?: boolean
-  shaped?: { signature: string; path: string; duration: number; peaks: number[] }
-}
-
-interface Job<T> {
-  stage: string
-  done: boolean
-  cancelled: boolean
-  error: string | null
-  result: T | null
-}
-
-interface Analysis {
-  rate: number
-  channels: number
-  duration: number
-  bpm: number | null
-  peaks: number[]
-}
-
-interface Heard {
-  path: string
-  duration: number
-  peaks: number[]
-}
-
-interface Rendered {
-  path: string
-  name: string
-  duration: number
-  elapsed: number
 }
 
 const formats = [
@@ -75,79 +41,50 @@ const formats = [
 export function App() {
   const [tracks, setTracks] = useState<Track[]>([])
   const [selected, setSelected] = useState("")
+  const [player, setPlayer] = useState<Player | null>(null)
   const [format, setFormat] = useState("wav")
   const [output, setOutput] = useState("")
   const [busy, setBusy] = useState("")
-  const [results, setResults] = useState<Rendered[]>([])
+  const [results, setResults] = useState<Saved[]>([])
   const [message, setMessage] = useState("")
-  const known = useRef(new Set<string>())
+  const loaded = useRef<{ path: string; samples: Samples } | null>(null)
 
   const dragging = useDrop((paths) => add(paths), setMessage)
   const track = tracks.find((item) => item.path === selected) ?? tracks[0]
+  const change = track ? changeOf(track) : null
 
   function update(path: string, patch: Partial<Track>) {
     setTracks((current) => current.map((item) => (item.path === path ? { ...item, ...patch } : item)))
   }
 
   function add(paths: string[]) {
-    const fresh = paths.filter((path) => !known.current.has(path))
+    const fresh = [...new Set(paths)].filter((path) => !tracks.some((item) => item.path === path))
     if (!fresh.length) return
     setMessage("")
-    for (const path of fresh) known.current.add(path)
     setTracks((current) => [
       ...current,
-      ...fresh.map((path) => ({
-        path,
-        name: basename(path),
-        status: "reading" as const,
-        sourceBpm: "",
-        targetBpm: "",
-        pitch: 0,
-        formant: 0,
-      })),
+      ...fresh.map((path) => ({ path, name: basename(path), sourceBpm: "", targetBpm: "", pitch: 0, formant: 0 })),
     ])
     setSelected(fresh[0])
-    for (const path of fresh) void analyze(path)
-  }
-
-  async function analyze(path: string) {
-    const bridge = host()
-    if (!bridge) {
-      update(path, { status: "failed", error: "Open this app in 0x1audio." })
-      return
-    }
-    try {
-      const { id } = await bridge.call<{ id: string }>("analyze", { path })
-      const job = await wait<Analysis>(id)
-      if (job.error || !job.result) throw new Error(job.error ?? "Could not read this file.")
-      const bpm = job.result.bpm ? String(job.result.bpm) : ""
-      update(path, {
-        status: "ready",
-        rate: job.result.rate,
-        channels: job.result.channels,
-        duration: job.result.duration,
-        detected: job.result.bpm,
-        peaks: job.result.peaks,
-        sourceBpm: bpm,
-        targetBpm: bpm,
-      })
-    } catch (error) {
-      update(path, { status: "failed", error: error instanceof Error ? error.message : "Could not read this file." })
+    for (const path of fresh) {
+      open(path).then(
+        (opened) => {
+          const bpm = opened.bpm ? String(opened.bpm) : ""
+          update(path, { opened, sourceBpm: bpm, targetBpm: bpm })
+        },
+        (error: unknown) => update(path, { error: problem(error, "Could not read this file.") }),
+      )
     }
   }
 
   function remove(path: string) {
-    known.current.delete(path)
     setTracks((current) => current.filter((item) => item.path !== path))
     if (selected === path) setSelected("")
   }
 
   async function choose() {
     const bridge = host()
-    if (!bridge?.pick) {
-      setMessage("Open this app in 0x1audio.")
-      return
-    }
+    if (!bridge?.pick) return setMessage("Open this app in 0x1audio.")
     add(await bridge.pick("file"))
   }
 
@@ -156,97 +93,68 @@ export function App() {
     if (picked?.[0]) setOutput(picked[0])
   }
 
+  // One player at a time, for the selected track. Its settings follow the controls live.
+  const openedTrack = track?.opened ? track : null
   useEffect(() => {
-    if (!track || track.status !== "ready" || !track.peaks?.length) return
-    const problem = tempoProblem(track)
-    if (problem) {
-      setMessage(problem)
-      return
-    }
-    const sig = signature(track)
-    if (neutral(track) || track.shaped?.signature === sig) {
-      if (track.shaping) update(track.path, { shaping: false })
-      return
-    }
-    const item = track
-    let aborted = false
-    let jobId = ""
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        const bridge = host()
-        if (!bridge || aborted) return
-        update(item.path, { shaping: true })
-        setMessage("")
-        try {
-          const created = await bridge.call<{ id: string }>("listen", {
-            path: item.path,
-            pitch: item.pitch,
-            formant: item.formant,
-            source_bpm: Number(item.sourceBpm) || null,
-            target_bpm: Number(item.targetBpm) || null,
-          })
-          jobId = created.id
-          if (aborted) {
-            void bridge.call("cancel", { id: jobId })
-            return
-          }
-          const job = await wait<Heard>(jobId)
-          if (aborted || job.cancelled) return
-          if (job.error || !job.result) throw new Error(job.error ?? "Could not update the waveform.")
-          update(item.path, {
-            shaping: false,
-            shaped: { signature: sig, path: job.result.path, duration: job.result.duration, peaks: job.result.peaks },
-          })
-        } catch (error) {
-          if (aborted) return
-          update(item.path, { shaping: false })
-          setMessage(error instanceof Error ? error.message : "Could not update the waveform.")
-        }
-      })()
-    }, 400)
+    if (!openedTrack?.opened) return
+    const { path, opened } = openedTrack
+    let live = true
+    let made: Player | null = null
+    void (async () => {
+      try {
+        const samples = loaded.current?.path === path ? loaded.current.samples : await load(opened)
+        loaded.current = { path, samples }
+        made = await Player.open(samples, changeOf(openedTrack) ?? unchanged)
+        if (live) setPlayer(made)
+        else made.close()
+      } catch (error) {
+        if (live) setMessage(problem(error, "Could not play this file."))
+      }
+    })()
     return () => {
-      aborted = true
-      window.clearTimeout(timer)
-      if (jobId) void host()?.call("cancel", { id: jobId })
+      live = false
+      made?.close()
+      setPlayer(null)
     }
-  }, [track?.path, track?.status, track?.peaks, track?.pitch, track?.formant, track?.sourceBpm, track?.targetBpm, track?.shaped?.signature])
+    // Rebuilt only for a different file. Changes reach the player through set().
+  }, [openedTrack?.path, openedTrack?.opened])
 
-  async function render(item: Track) {
-    const bridge = host()
-    if (!bridge) throw new Error("Open this app in 0x1audio.")
-    const { id } = await bridge.call<{ id: string }>("render", {
-      path: item.path,
-      pitch: item.pitch,
-      formant: item.formant,
-      source_bpm: Number(item.sourceBpm) || null,
-      target_bpm: Number(item.targetBpm) || null,
-      format,
-      output,
-    })
-    const job = await wait<Rendered>(id, (state) => setBusy(state.stage))
-    if (job.error || !job.result) throw new Error(job.error ?? "Something went wrong.")
-    return job.result
-  }
+  useEffect(() => {
+    if (player && change) player.set(change)
+  }, [player, change?.pitch, change?.formant, change?.tempo])
 
   async function exportTracks(items: Track[]) {
-    const ready = items.filter((item) => item.status === "ready")
-    const problem = ready.map(tempoProblem).find(Boolean)
-    if (problem) return setMessage(problem)
+    const ready = items.filter((item) => item.opened)
+    const wrong = ready.find((item) => !changeOf(item))
+    if (wrong) return setMessage(`${wrong.name}: keep the new BPM between a quarter and four times the original.`)
     setMessage("")
     try {
       for (const [index, item] of ready.entries()) {
-        setBusy(ready.length > 1 ? `${item.name} (${index + 1} of ${ready.length})` : "Changing")
-        const done = await render(item)
-        setResults((current) => [done, ...current])
+        const opened = item.opened as Opened
+        const settings = changeOf(item) as Change
+        const counter = ready.length > 1 ? ` (${index + 1} of ${ready.length})` : ""
+        setBusy(`Changing ${item.name}${counter}`)
+        const samples = loaded.current?.path === item.path ? loaded.current.samples : await load(opened)
+        const changed = neutral(settings) ? samples.channels : await render(samples, settings)
+        setBusy(`Saving ${item.name}${counter}`)
+        const saved = await save(changed, {
+          ...settings,
+          rate: opened.rate,
+          source: item.path,
+          format,
+          output,
+          bpm: settings.tempo !== 1 ? Number(item.targetBpm) || null : null,
+        })
+        setResults((current) => [saved, ...current])
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Something went wrong.")
+      setMessage(problem(error, "Something went wrong."))
     } finally {
       setBusy("")
     }
   }
 
-  const ready = tracks.filter((item) => item.status === "ready")
+  const ready = tracks.filter((item) => item.opened)
   const working = busy !== ""
 
   return (
@@ -283,18 +191,16 @@ export function App() {
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
                     onClick={() => setSelected(item.path)}
                   >
-                    {item.status === "reading" ? (
-                      <Spinner className="size-5 shrink-0" />
-                    ) : item.status === "failed" ? (
+                    {item.error ? (
                       <WarningCircleIcon size={20} className="shrink-0 text-destructive" />
-                    ) : (
+                    ) : item.opened ? (
                       <FileAudioIcon size={20} className="shrink-0 text-muted-foreground" />
+                    ) : (
+                      <Spinner className="size-5 shrink-0" />
                     )}
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="truncate text-sm font-medium">{item.name}</span>
-                      <span className={`truncate text-xs ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>
-                        {summary(item)}
-                      </span>
+                      <span className={`truncate text-xs ${item.error ? "text-destructive" : "text-muted-foreground"}`}>{summary(item)}</span>
                     </span>
                   </button>
                   <button
@@ -317,18 +223,16 @@ export function App() {
         </section>
       )}
 
-      {track?.status === "ready" && track.peaks?.length && track.duration ? (
-        <Waveform
-          key={track.path}
-          src={fileUrl(shown(track).path)}
-          peaks={shown(track).peaks}
-          duration={shown(track).duration}
-          updating={Boolean(track.shaping)}
-        />
-      ) : null}
-
-      {track?.status === "ready" ? (
-        <Editor key={track.path} track={track} disabled={working} onChange={(patch) => update(track.path, patch)} />
+      {track?.opened ? (
+        <>
+          <Waveform
+            player={player}
+            peaks={track.opened.peaks}
+            duration={track.opened.frames / track.opened.rate}
+            tempo={change?.tempo ?? 1}
+          />
+          <Editor key={track.path} track={track} disabled={working} onChange={(patch) => update(track.path, patch)} />
+        </>
       ) : null}
 
       {ready.length ? (
@@ -364,7 +268,7 @@ export function App() {
 
       {ready.length ? (
         <div className="flex gap-2">
-          {track?.status === "ready" ? (
+          {track?.opened ? (
             <Button className="h-12 flex-1 text-base" disabled={working} onClick={() => void exportTracks([track])}>
               Export {ready.length > 1 ? "this one" : ""}
             </Button>
@@ -402,17 +306,9 @@ export function App() {
   )
 }
 
-function Editor({
-  track,
-  disabled,
-  onChange,
-}: {
-  track: Track
-  disabled: boolean
-  onChange: (patch: Partial<Track>) => void
-}) {
-  const changed = !neutral(track)
-  const speed = tempo(track)
+function Editor({ track, disabled, onChange }: { track: Track; disabled: boolean; onChange: (patch: Partial<Track>) => void }) {
+  const settings = changeOf(track)
+  const changed = !settings || !neutral(settings)
 
   function scaleSource(factor: number) {
     const source = Number(track.sourceBpm)
@@ -426,65 +322,69 @@ function Editor({
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div className="flex flex-col gap-1.5">
           <CardTitle>Change</CardTitle>
-          <CardDescription>The waveform updates as you move these.</CardDescription>
+          <CardDescription>You hear every change right away.</CardDescription>
         </div>
-          <Button
-            variant="link"
-            className="h-6 px-0"
-            disabled={disabled || !changed}
-            onClick={() => onChange({ pitch: 0, formant: 0, targetBpm: track.sourceBpm })}
-          >
-            Reset
-          </Button>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-6">
-          <Semitones label="Pitch" value={track.pitch} min={-24} max={24} disabled={disabled} onChange={(pitch) => onChange({ pitch })} />
-          <Semitones label="Formant" value={track.formant} min={-12} max={12} disabled={disabled} onChange={(formant) => onChange({ formant })} />
+        <Button
+          variant="link"
+          className="h-6 px-0"
+          disabled={disabled || !changed}
+          onClick={() => onChange({ pitch: 0, formant: 0, targetBpm: track.sourceBpm })}
+        >
+          Reset
+        </Button>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        <Semitones label="Pitch" value={track.pitch} min={-24} max={24} disabled={disabled} onChange={(pitch) => onChange({ pitch })} />
+        <Semitones label="Formant" value={track.formant} min={-12} max={12} disabled={disabled} onChange={(formant) => onChange({ formant })} />
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col gap-2">
-              <Label>Original BPM</Label>
-              <div className="flex gap-2">
-                <Input
-                  type="number"
-                  inputMode="decimal"
-                  min={20}
-                  max={400}
-                  step={0.01}
-                  placeholder="Unknown"
-                  value={track.sourceBpm}
-                  disabled={disabled}
-                  onChange={(event) => onChange({ sourceBpm: event.target.value })}
-                />
-                <Button variant="outline" className="px-3" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(0.5)}>
-                  ½×
-                </Button>
-                <Button variant="outline" className="px-3" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(2)}>
-                  2×
-                </Button>
-              </div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label>New BPM</Label>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="flex flex-col gap-2">
+            <Label>Original BPM</Label>
+            <div className="flex gap-2">
               <Input
                 type="number"
                 inputMode="decimal"
                 min={20}
                 max={400}
                 step={0.01}
-                placeholder={track.sourceBpm ? track.sourceBpm : "Set the original first"}
-                value={track.targetBpm}
-                disabled={disabled || !track.sourceBpm}
-                onChange={(event) => onChange({ targetBpm: event.target.value })}
+                placeholder="Unknown"
+                value={track.sourceBpm}
+                disabled={disabled}
+                onChange={(event) => onChange({ sourceBpm: event.target.value })}
               />
+              <Button variant="outline" className="px-3" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(0.5)}>
+                ½×
+              </Button>
+              <Button variant="outline" className="px-3" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(2)}>
+                2×
+              </Button>
             </div>
           </div>
-          <p className="-mt-3 text-xs text-muted-foreground">
-            {track.detected ? `Detected ${track.detected} BPM.` : "No clear beat found. Type the BPM if you know it."}{" "}
-            {speed && speed !== 1 ? `Plays at ${Math.round(speed * 1000) / 10}% speed.` : ""}
-          </p>
-        </CardContent>
-      </Card>
+          <div className="flex flex-col gap-2">
+            <Label>New BPM</Label>
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={20}
+              max={400}
+              step={0.01}
+              placeholder={track.sourceBpm ? track.sourceBpm : "Set the original first"}
+              value={track.targetBpm}
+              disabled={disabled || !track.sourceBpm}
+              onChange={(event) => onChange({ targetBpm: event.target.value })}
+            />
+          </div>
+        </div>
+        <p className="-mt-3 text-xs text-muted-foreground">
+          {track.opened?.bpm ? `Detected ${track.opened.bpm} BPM.` : "No clear beat found. Type the BPM if you know it."}{" "}
+          {!settings
+            ? "Keep the new BPM between a quarter and four times the original."
+            : settings.tempo !== 1
+              ? `Plays at ${Math.round(settings.tempo * 1000) / 10}% speed.`
+              : ""}
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -524,62 +424,30 @@ function Semitones({
   )
 }
 
-function summary(track: Track) {
-  if (track.status === "reading") return "Reading…"
-  if (track.status === "failed") return track.error ?? "Could not read this file."
-  const parts = []
-  if (track.detected) parts.push(`${track.detected} BPM`)
-  if (track.rate) parts.push(rate(track.rate))
-  if (track.channels) parts.push(channels(track.channels))
-  if (track.duration) parts.push(duration(track.duration))
-  return parts.join(" · ")
-}
-
-function tempo(track: Track) {
+// The change a track asks for, or null when its BPMs ask for an impossible tempo.
+function changeOf(track: Track): Change | null {
   const source = Number(track.sourceBpm)
   const target = Number(track.targetBpm)
-  return source > 0 && target > 0 ? target / source : null
+  const tempo = source > 0 && target > 0 ? target / source : 1
+  if (tempo < 0.25 || tempo > 4) return null
+  return { pitch: track.pitch, formant: track.formant, tempo }
 }
 
-function tempoProblem(track: Track) {
-  const speed = tempo(track)
-  if (speed !== null && (speed < 0.25 || speed > 4)) {
-    return `${track.name}: keep the new BPM between a quarter and four times the original.`
-  }
-  return ""
+function neutral(change: Change) {
+  return change.pitch === 0 && change.formant === 0 && change.tempo === 1
 }
 
-function neutral(track: Track) {
-  return track.pitch === 0 && track.formant === 0 && track.targetBpm === track.sourceBpm
-}
-
-function shown(track: Track) {
-  const current = !neutral(track) && track.shaped?.signature === signature(track) ? track.shaped : track.shaped
-  if (!neutral(track) && current) return { path: current.path, peaks: current.peaks, duration: current.duration }
-  return { path: track.path, peaks: track.peaks ?? [], duration: track.duration ?? 0 }
-}
-
-function signature(track: Track) {
-  return JSON.stringify([track.pitch, track.formant, track.sourceBpm, track.targetBpm])
+function summary(track: Track) {
+  if (track.error) return track.error
+  if (!track.opened) return "Reading…"
+  const { bpm, rate: hz, channels: count, frames } = track.opened
+  return [bpm ? `${bpm} BPM` : "", rate(hz), channels(count), duration(frames / hz)].filter(Boolean).join(" · ")
 }
 
 function trim(value: number) {
   return String(Math.round(value * 100) / 100)
 }
 
-function fileUrl(path: string) {
-  const parts = path.replace(/\\/g, "/").split("/")
-  const encoded = parts.map((part, index) => (index === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part))).join("/")
-  return `file://${encoded.startsWith("/") ? "" : "/"}${encoded}`
-}
-
-async function wait<T>(id: string, onUpdate?: (job: Job<T>) => void): Promise<Job<T>> {
-  const bridge = host()
-  if (!bridge) throw new Error("Open this app in 0x1audio.")
-  for (;;) {
-    const job = await bridge.call<Job<T>>("status", { id })
-    onUpdate?.(job)
-    if (job.done) return job
-    await new Promise((resolve) => setTimeout(resolve, 300))
-  }
+function problem(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback
 }

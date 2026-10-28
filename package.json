@@ -1,7 +1,7 @@
 {
   "name": "audiowizard",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,6 +14,7 @@
     "@phosphor-icons/react": "^2.1.10",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "signalsmith-stretch": "^1.3.2",
     "wavesurfer.js": "^8.0.3"
   },
   "devDependencies": {
