@@ -110,3 +110,44 @@ export async function render(audio: Samples, change: Change): Promise<Float32Arr
   const result = await context.startRendering()
   return Array.from({ length: result.numberOfChannels }, (_, index) => result.getChannelData(index).subarray(lead))
 }
+
+// The waveform only needs the shape, so it is redrawn from a mono copy at about
+// 11 kHz, which renders around eight times faster than the full track.
+const SKETCH_RATE = 11025
+
+export function sketch(audio: Samples): Samples {
+  const step = Math.max(1, Math.round(audio.rate / SKETCH_RATE))
+  const frames = Math.floor(audio.channels[0].length / step)
+  const mono = new Float32Array(frames)
+  const scale = 1 / (step * audio.channels.length)
+  for (const channel of audio.channels) {
+    for (let index = 0, at = 0; index < frames; index += 1) {
+      let sum = 0
+      for (const end = at + step; at < end; at += 1) sum += channel[at]
+      mono[index] += sum * scale
+    }
+  }
+  return { rate: audio.rate / step, channels: [mono] }
+}
+
+export function isNeutral(change: Change) {
+  return change.pitch === 0 && change.formant === 0 && change.tempo === 1
+}
+
+export async function outline(rough: Samples, change: Change, bars = 1000) {
+  return peaks(isNeutral(change) ? rough.channels[0] : (await render(rough, change))[0], bars)
+}
+
+function peaks(samples: Float32Array, bars: number) {
+  const found = new Array<number>(bars).fill(0)
+  for (let bar = 0; bar < bars; bar += 1) {
+    const end = Math.min(samples.length, Math.max(Math.floor(((bar + 1) * samples.length) / bars), 1))
+    let loudest = 0
+    for (let index = Math.floor((bar * samples.length) / bars); index < end; index += 1) {
+      const level = Math.abs(samples[index])
+      if (level > loudest) loudest = level
+    }
+    found[bar] = loudest
+  }
+  return found
+}

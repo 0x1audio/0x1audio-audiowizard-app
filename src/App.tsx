@@ -17,7 +17,7 @@ import { host } from "@0x1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
 import { basename, channels, duration, rate, useDrop } from "./drop.ts"
-import { Player, render, unchanged, type Change, type Samples } from "./engine.ts"
+import { isNeutral, Player, render, sketch, unchanged, type Change, type Samples } from "./engine.ts"
 import { Waveform } from "./wave.tsx"
 
 interface Track {
@@ -42,6 +42,7 @@ export function App() {
   const [tracks, setTracks] = useState<Track[]>([])
   const [selected, setSelected] = useState("")
   const [player, setPlayer] = useState<Player | null>(null)
+  const [rough, setRough] = useState<Samples | null>(null)
   const [format, setFormat] = useState("wav")
   const [output, setOutput] = useState("")
   const [busy, setBusy] = useState("")
@@ -104,6 +105,7 @@ export function App() {
       try {
         const samples = loaded.current?.path === path ? loaded.current.samples : await load(opened)
         loaded.current = { path, samples }
+        if (live) setRough(sketch(samples))
         made = await Player.open(samples, changeOf(openedTrack) ?? unchanged)
         if (live) setPlayer(made)
         else made.close()
@@ -115,6 +117,7 @@ export function App() {
       live = false
       made?.close()
       setPlayer(null)
+      setRough(null)
     }
     // Rebuilt only for a different file. Changes reach the player through set().
   }, [openedTrack?.path, openedTrack?.opened])
@@ -135,7 +138,7 @@ export function App() {
         const counter = ready.length > 1 ? ` (${index + 1} of ${ready.length})` : ""
         setBusy(`Changing ${item.name}${counter}`)
         const samples = loaded.current?.path === item.path ? loaded.current.samples : await load(opened)
-        const changed = neutral(settings) ? samples.channels : await render(samples, settings)
+        const changed = isNeutral(settings) ? samples.channels : await render(samples, settings)
         setBusy(`Saving ${item.name}${counter}`)
         const saved = await save(changed, {
           ...settings,
@@ -227,9 +230,10 @@ export function App() {
         <>
           <Waveform
             player={player}
+            rough={rough}
             peaks={track.opened.peaks}
             duration={track.opened.frames / track.opened.rate}
-            tempo={change?.tempo ?? 1}
+            change={change ?? unchanged}
           />
           <Editor key={track.path} track={track} disabled={working} onChange={(patch) => update(track.path, patch)} />
         </>
@@ -308,7 +312,7 @@ export function App() {
 
 function Editor({ track, disabled, onChange }: { track: Track; disabled: boolean; onChange: (patch: Partial<Track>) => void }) {
   const settings = changeOf(track)
-  const changed = !settings || !neutral(settings)
+  const changed = !settings || !isNeutral(settings)
 
   function scaleSource(factor: number) {
     const source = Number(track.sourceBpm)
@@ -431,10 +435,6 @@ function changeOf(track: Track): Change | null {
   const tempo = source > 0 && target > 0 ? target / source : 1
   if (tempo < 0.25 || tempo > 4) return null
   return { pitch: track.pitch, formant: track.formant, tempo }
-}
-
-function neutral(change: Change) {
-  return change.pitch === 0 && change.formant === 0 && change.tempo === 1
 }
 
 function summary(track: Track) {
