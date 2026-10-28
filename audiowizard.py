@@ -13,7 +13,6 @@ from collections import OrderedDict
 from pathlib import Path
 
 from ox1audio import serve
-from ox1audio.data import root
 
 from audio import decode, encode, free_path
 from wizard import Change, detect_bpm, label, process
@@ -138,9 +137,20 @@ def _load(path: str):
         return loaded
 
 
+def _data_root() -> Path:
+    # The desktop sets this. The installed SDK is older than ox1audio.data, so the
+    # folder comes straight from the environment.
+    value = os.environ.get("OX1_DATA", "").strip()
+    if not value:
+        raise RuntimeError("This app has no data folder.")
+    folder = Path(value)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def _preview_path(path: str, change: Change, options: dict) -> Path:
     key = f"{path}|{change}|{options['start']:.2f}|{options['length']:.2f}|{time.time_ns()}"
-    return root() / "previews" / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.wav"
+    return _data_root() / "previews" / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.wav"
 
 
 def _prune_previews(folder: Path) -> None:
