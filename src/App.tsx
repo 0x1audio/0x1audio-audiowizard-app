@@ -126,6 +126,23 @@ export function App() {
     if (player && change) player.set(change)
   }, [player, change?.pitch, change?.formant, change?.tempo])
 
+  const playback = useRef<Player | null>(null)
+  playback.current = player
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || event.altKey || event.ctrlKey || event.metaKey) return
+      if (typing(event.target)) return
+      event.preventDefault()
+      if (event.repeat) return
+      const current = playback.current
+      if (!current) return
+      if (current.playing) current.pause()
+      else current.play()
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
   async function exportTracks(items: Track[]) {
     const ready = items.filter((item) => item.opened)
     const wrong = ready.find((item) => !changeOf(item))
@@ -450,4 +467,14 @@ function trim(value: number) {
 
 function problem(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback
+}
+
+function typing(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const role = target.getAttribute("role")
+  if (role === "textbox" || role === "searchbox" || role === "combobox") return true
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true
+  if (!(target instanceof HTMLInputElement)) return false
+  return !["button", "checkbox", "radio", "range", "file", "submit", "reset"].includes(target.type)
 }
