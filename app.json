@@ -2,8 +2,8 @@
   "name": "audiowizard",
   "displayName": "audioWizard",
   "version": "0.1.6",
-  "sdk": "0.1.0",
-  "permissions": [],
+  "sdk": "0.2.0",
+  "permissions": ["files", "data", "library"],
   "dependencies": {},
   "frontend": "dist/index.html",
   "worker": {

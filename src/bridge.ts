@@ -1,4 +1,4 @@
-import { host } from "@0x1audio/sdk/page"
+import { host, job } from "@0x1audio/sdk/page"
 
 import type { Change, Samples } from "./engine.ts"
 
@@ -20,29 +20,10 @@ export interface Saved {
   name: string
 }
 
-interface Job<T> {
-  done: boolean
-  error?: string | null
-  result?: T
-}
-
 function bridge() {
   const current = host()
   if (!current) throw new Error("Open this app in 0x1audio.")
   return current
-}
-
-async function job<T>(name: string, body: unknown): Promise<T> {
-  const current = bridge()
-  const { id } = await current.call<{ id: string }>(name, body)
-  for (;;) {
-    const state = await current.call<Job<T>>("status", { id })
-    if (state.done) {
-      if (state.error || state.result === undefined) throw new Error(state.error ?? "Something went wrong.")
-      return state.result
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
 }
 
 export function open(path: string) {

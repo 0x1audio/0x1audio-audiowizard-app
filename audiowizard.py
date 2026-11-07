@@ -12,14 +12,12 @@ longer than one call is allowed to.
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from ox1audio import serve
+from ox1audio import job, library, run
 
 from audio import decode, encode, free_path
 from wizard import detect_bpm, label, peaks
@@ -27,18 +25,16 @@ from wizard import detect_bpm, label, peaks
 KEEP_TRACKS = 6
 FORMATS = ("wav", "aiff", "flac", "mp3")
 
-_pool = ThreadPoolExecutor(max_workers=2)
-_jobs: dict[str, Future] = {}
-_ids = itertools.count(1)
 
-
-def open_track(call):
+@job
+def open(call):
     """Decode a file into the data folder. The result says where its samples are."""
-    return _start(_open, _source(_body(call).get("path")))
+    return _open(_source(_body(call).get("path")))
 
 
+@job
 def save(call):
-    """Encode samples the page rendered into ``renders/`` and put the file next to the original."""
+    """Encode samples the page rendered into ``renders/`` and add the file to the Library."""
     body = _body(call)
     rendered = _data_file(body.get("samples"), "renders")
     rate, channels = int(body.get("rate") or 0), int(body.get("channels") or 0)
@@ -47,19 +43,7 @@ def save(call):
     kind = body.get("format") if body.get("format") in FORMATS else "wav"
     output = body.get("output")
     name = label(_number(body.get("pitch")), _number(body.get("formant")), _number(body.get("tempo"), 1.0), _number(body.get("bpm")) or None)
-    return _start(_save, rendered, rate, channels, _source(body.get("source")), kind, output if isinstance(output, str) and output else None, name)
-
-
-def status(call):
-    ident = str(_body(call).get("id"))
-    future = _jobs.get(ident)
-    if future is None:
-        raise ValueError("That job is gone.")
-    if not future.done():
-        return {"done": False}
-    del _jobs[ident]
-    error = future.exception()
-    return {"done": True, "error": str(error) if error else None, "result": None if error else future.result()}
+    return _save(rendered, rate, channels, _source(body.get("source")), kind, output if isinstance(output, str) and output else None, name)
 
 
 def _open(path: str) -> dict:
@@ -104,6 +88,7 @@ def _save(rendered: Path, rate: int, channels: int, source: str, kind: str, outp
     folder = Path(output) if output else original.parent
     target = folder / f"{original.stem} ({name}).{kind}"
     written = encode(audio, rate, free_path(target, original), kind)
+    library.add("sound", written, written.stem)
     return {"path": str(written), "name": written.name}
 
 
@@ -112,12 +97,6 @@ def _prune(folder: Path) -> None:
     for old in kept[KEEP_TRACKS:]:
         old.unlink(missing_ok=True)
         old.with_suffix(".json").unlink(missing_ok=True)
-
-
-def _start(work, *args) -> dict:
-    ident = str(next(_ids))
-    _jobs[ident] = _pool.submit(work, *args)
-    return {"id": ident}
 
 
 def _data() -> Path:
@@ -158,4 +137,4 @@ def _number(value, fallback: float = 0.0) -> float:
 
 
 if __name__ == "__main__":
-    serve({"open": open_track, "save": save, "status": status})
+    run()
