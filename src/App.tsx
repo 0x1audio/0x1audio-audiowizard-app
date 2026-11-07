@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { CheckCircleIcon, FileAudioIcon, FolderOpenIcon, PlusIcon, UploadSimpleIcon, WarningCircleIcon, XIcon } from "@phosphor-icons/react"
+import { CheckCircleIcon, FileAudioIcon, PlusIcon, WarningCircleIcon, XIcon } from "@phosphor-icons/react"
 import {
   Button,
   Card,
@@ -8,16 +8,18 @@ import {
   CardHeader,
   CardTitle,
   Combobox,
+  Dropzone,
   Input,
   Label,
   Slider,
   Spinner,
+  useFileDrop,
 } from "@0x1audio/design-system"
 import { host } from "@0x1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
 import lava from "./chroma-lava.jpg"
-import { basename, channels, duration, rate, useDrop } from "./drop.ts"
+import { basename, channels, duration, rate } from "./drop.ts"
 import { isNeutral, Player, render, sketch, unchanged, type Change, type Samples } from "./engine.ts"
 import { Waveform } from "./wave.tsx"
 
@@ -51,7 +53,15 @@ export function App() {
   const [message, setMessage] = useState("")
   const loaded = useRef<{ path: string; samples: Samples } | null>(null)
 
-  const dragging = useDrop((paths) => add(paths), setMessage)
+  const dragging = useFileDrop((files) => {
+    const bridge = host()
+    if (!bridge?.pathFor) {
+      setMessage("Update 0x1audio to drop files here, or use Choose audio.")
+      return
+    }
+    const paths = files.map((file) => bridge.pathFor?.(file) ?? "").filter(Boolean)
+    if (paths.length) add(paths)
+  })
   const track = tracks.find((item) => item.path === selected) ?? tracks[0]
   const change = track ? changeOf(track) : null
 
@@ -191,19 +201,11 @@ export function App() {
       <main className="relative mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-4 pb-10">
 
       {tracks.length === 0 ? (
-        <section
-          className={`flex flex-col items-center justify-center gap-3 rounded-2xl px-6 py-16 text-center ${dragging ? "bg-[var(--bg-field)]" : "bg-card"}`}
-        >
-          <UploadSimpleIcon size={32} className="text-muted-foreground" />
-          <div className="flex flex-col gap-1">
-            <p className="font-medium">{dragging ? "Drop to add" : "Drop audio here"}</p>
-            <p className="text-sm text-muted-foreground">Drop as many files as you like. Each one keeps its own settings.</p>
-          </div>
-          <Button variant="outline" onClick={() => void choose()}>
-            <FolderOpenIcon size={16} />
-            Choose audio
-          </Button>
-        </section>
+        <Dropzone
+          description="Drop as many files as you like. Each one keeps its own settings."
+          dragging={dragging}
+          onChoose={() => void choose()}
+        />
       ) : (
         <section className="flex flex-col gap-2">
           <ul className="flex flex-col gap-2">
