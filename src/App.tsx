@@ -16,6 +16,7 @@ import {
 import { host } from "@0x1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
+import lava from "./chroma-lava.jpg"
 import { basename, channels, duration, rate, useDrop } from "./drop.ts"
 import { isNeutral, Player, render, sketch, unchanged, type Change, type Samples } from "./engine.ts"
 import { Waveform } from "./wave.tsx"
@@ -178,11 +179,16 @@ export function App() {
   const working = busy !== ""
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-10 text-foreground">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-xl font-medium">audioWizard</h1>
-        <p className="text-sm text-muted-foreground">Change pitch, formant, and tempo, each one on its own.</p>
+    <div className="relative min-h-svh bg-background text-foreground">
+      <header className="relative h-52">
+        <img src={lava} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-[center_22%]" />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/20 from-25% to-background" />
+        <div className="absolute inset-x-6 bottom-1 flex flex-col items-center gap-2 text-center">
+          <h1 className="text-5xl font-medium tracking-tight text-balance">audioWizard</h1>
+          <p className="text-sm text-muted-foreground">Change pitch, formant, and tempo, each one on its own.</p>
+        </div>
       </header>
+      <main className="relative mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-4 pb-10">
 
       {tracks.length === 0 ? (
         <section
@@ -323,7 +329,8 @@ export function App() {
           ))}
         </ul>
       ) : null}
-    </main>
+      </main>
+    </div>
   )
 }
 
