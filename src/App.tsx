@@ -9,6 +9,7 @@ import {
   CardTitle,
   Combobox,
   Dropzone,
+  Logo,
   Input,
   Label,
   Slider,
@@ -190,22 +191,31 @@ export function App() {
 
   return (
     <div className="relative min-h-svh bg-background text-foreground">
-      <header className="relative h-52">
+      <header className="relative h-32">
         <img src={lava} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-[center_22%]" />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/20 from-25% to-background" />
-        <div className="absolute inset-x-6 bottom-1 flex flex-col items-center gap-2 text-center">
-          <h1 className="text-5xl font-medium tracking-tight text-balance">audioWizard</h1>
-          <p className="text-sm text-muted-foreground">Change pitch, formant, and tempo, each one on its own.</p>
-        </div>
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 from-10% to-background" />
+        <Logo className="absolute top-4 left-6 h-5 text-white" />
       </header>
-      <main className="relative mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-4 pb-10">
+      <main className="relative mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pb-10">
+        <div className="flex flex-col items-center gap-2 pb-2 text-center">
+          <h1 className="text-4xl font-semibold tracking-tight text-balance">audioWizard</h1>
+          <p className="text-sm text-muted-foreground">Change how high it is, how big the voice sounds, and how fast it plays. Changing one leaves the others alone, so a higher voice does not speed the song up.</p>
+        </div>
 
       {tracks.length === 0 ? (
-        <Dropzone
-          description="Drop as many files as you like. Each one keeps its own settings."
-          dragging={dragging}
-          onChoose={() => void choose()}
-        />
+        <div className="flex flex-col gap-6">
+          <Dropzone
+            description="One song, or a few."
+            dragging={dragging}
+            onChoose={() => void choose()}
+          />
+          <ul className="flex flex-col gap-2 text-sm text-muted-foreground">
+            <li>How high — higher or lower</li>
+            <li>How big the voice sounds — bigger or smaller</li>
+            <li>How fast — faster or slower, on its own</li>
+          </ul>
+          <p className="text-sm text-muted-foreground">These show on each song you add, with a picture of the sound.</p>
+        </div>
       ) : (
         <section className="flex flex-col gap-2">
           <ul className="flex flex-col gap-2">
