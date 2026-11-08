@@ -4,7 +4,6 @@ version = "0.2.0"
 requires-python = ">=3.13"
 dependencies = [
   "numpy>=2.1",
-  "imageio-ffmpeg>=0.6",
 ]
 
 [dependency-groups]
