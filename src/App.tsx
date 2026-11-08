@@ -11,6 +11,7 @@ import {
   Dropzone,
   Input,
   Label,
+  LibraryDialog,
   Slider,
   Spinner,
   useFileDrop,
@@ -51,12 +52,13 @@ export function App() {
   const [busy, setBusy] = useState("")
   const [results, setResults] = useState<Saved[]>([])
   const [message, setMessage] = useState("")
+  const [library, setLibrary] = useState(false)
   const loaded = useRef<{ path: string; samples: Samples } | null>(null)
 
   const dragging = useFileDrop((files) => {
     const bridge = host()
     if (!bridge?.pathFor) {
-      setMessage("Update 0x1audio to drop files here, or use Choose audio.")
+      setMessage("Update 0x1audio to drop files here, or browse your Library.")
       return
     }
     const paths = files.map((file) => bridge.pathFor?.(file) ?? "").filter(Boolean)
@@ -92,12 +94,6 @@ export function App() {
   function remove(path: string) {
     setTracks((current) => current.filter((item) => item.path !== path))
     if (selected === path) setSelected("")
-  }
-
-  async function choose() {
-    const bridge = host()
-    if (!bridge?.pick) return setMessage("Open this app in 0x1audio.")
-    add(await bridge.pick("file"))
   }
 
   async function chooseFolder() {
@@ -204,7 +200,8 @@ export function App() {
         <Dropzone
           description="Drop as many files as you like. Each one keeps its own settings."
           dragging={dragging}
-          onChoose={() => void choose()}
+          multiple
+          onChoose={add}
         />
       ) : (
         <section className="flex flex-col gap-2">
@@ -244,10 +241,11 @@ export function App() {
               </li>
             ))}
           </ul>
-          <Button variant="outline" className={`self-start ${dragging ? "bg-[var(--bg-field)]" : ""}`} onClick={() => void choose()}>
+          <Button variant="outline" className={`self-start ${dragging ? "bg-[var(--bg-field)]" : ""}`} onClick={() => setLibrary(true)}>
             <PlusIcon size={16} />
             {dragging ? "Drop to add" : "Add audio"}
           </Button>
+          <LibraryDialog open={library} multiple onOpenChange={setLibrary} onPick={add} />
         </section>
       )}
 
