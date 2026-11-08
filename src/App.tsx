@@ -19,7 +19,9 @@ import {
 import { host } from "@0x1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
-import lava from "./chroma-lava.jpg"
+import header from "./wizard-header.jpg"
+import mark from "./wizard-mark.jpg"
+import { Wordmark } from "./wordmark.tsx"
 import { basename, channels, duration, rate } from "./drop.ts"
 import { isNeutral, Player, render, sketch, unchanged, type Change, type Samples } from "./engine.ts"
 import { Waveform } from "./wave.tsx"
@@ -186,15 +188,18 @@ export function App() {
 
   return (
     <div className="relative min-h-svh bg-background text-foreground">
-      <header className="relative h-52">
-        <img src={lava} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-[center_22%]" />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/20 from-25% to-background" />
-        <div className="absolute inset-x-6 bottom-1 flex flex-col items-center gap-2 text-center">
-          <h1 className="text-5xl font-medium tracking-tight text-balance">audioWizard</h1>
+      <header className="relative h-44">
+        <img src={header} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-center" />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-black/25 to-background" />
+      </header>
+      <main className="relative mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-8 pb-10">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <h1 className="flex items-center gap-4">
+            <img src={mark} alt="" className="size-24 rounded-full object-cover" />
+            <Wordmark className="h-14" />
+          </h1>
           <p className="text-sm text-muted-foreground">Change pitch, formant, and tempo, each one on its own.</p>
         </div>
-      </header>
-      <main className="relative mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-4 pb-10">
 
       {tracks.length === 0 ? (
         <Dropzone
