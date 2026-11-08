@@ -3,4 +3,3 @@ __pycache__/
 *.py[cod]
 .venv/
 tests/_out/
-uv.lock

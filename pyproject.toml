@@ -7,10 +7,5 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-  "soundfile>=0.13",
-  "ox1audio",
-]
-
-[tool.uv.sources]
-ox1audio = { path = "../0x1audio-sdk-py" }
+# For tests only: mixel test runs them with the SDK.
+dev = ["soundfile>=0.13"]
