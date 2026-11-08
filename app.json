@@ -5,6 +5,7 @@
   "summary": "Change pitch, formant and tempo, each on its own.",
   "version": "0.2.0",
   "sdk": "^0.3",
+  "license": "Apache-2.0",
   "entry": "audiowizard.py",
   "page": "dist/index.html",
   "permissions": {
