@@ -33,7 +33,7 @@ import {
   transition,
   useFileDrop,
 } from "@0x1audio/design-system"
-import { host } from "@0x1audio/sdk/page"
+import { ox } from "@0x1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
 import { basename, channels, duration, rate } from "./drop.ts"
@@ -80,12 +80,11 @@ export function App() {
   const stopping = useRef(false)
 
   const dragging = useFileDrop((files) => {
-    const bridge = host()
-    if (!bridge?.pathFor) {
+    if (!ox.available()) {
       toast.error("Update 0x1audio to drop files here, or browse your Library.")
       return
     }
-    const paths = files.map((file) => bridge.pathFor?.(file) ?? "").filter(Boolean)
+    const paths = files.map((file) => ox.files.fromDrop(file)).filter(Boolean)
     if (paths.length) add(paths)
   })
   const track = tracks.find((item) => item.path === selected) ?? tracks[0]
@@ -130,8 +129,8 @@ export function App() {
   }
 
   async function choose() {
-    const picked = await host()?.pick?.("file")
-    if (picked?.length) add(picked)
+    const picked = ox.available() ? await ox.files.pick({ multiple: true }) : []
+    if (picked.length) add(picked)
   }
 
   // One player at a time, for the selected track. Its settings follow the controls live.
@@ -374,7 +373,12 @@ export function App() {
                     </div>
                   )}
                   {exporting.state === "failed" ? (
-                    <Callout tone="danger" icon={<WarningCircleIcon />} title="The export didn't finish">
+                    <Callout
+                      tone="danger"
+                      icon={<WarningCircleIcon />}
+                      title="The export didn't finish"
+                      ref={(node) => node?.scrollIntoView({ block: "nearest", behavior: "smooth" })}
+                    >
                       {exporting.message}
                     </Callout>
                   ) : null}
@@ -469,10 +473,9 @@ function ResultRow({ result, index }: { result: Saved; index: number }) {
     }
     try {
       if (!audio.current) {
-        const read = host()?.readFile
-        if (!read) throw new Error("Reopen this app in 0x1audio.")
+        if (!ox.available()) throw new Error("Reopen this app in 0x1audio.")
         setBusy(true)
-        const bytes = await read(result.path)
+        const bytes = await ox.files.read(result.path)
         const node = new Audio(URL.createObjectURL(new Blob([bytes.slice()])))
         node.onplay = () => setPlaying(true)
         node.onpause = () => setPlaying(false)
@@ -497,7 +500,7 @@ function ResultRow({ result, index }: { result: Saved; index: number }) {
           {busy ? <Spinner /> : playing ? <PauseIcon weight="fill" /> : <PlayIcon weight="fill" />}
         </Button>
       ) : null}
-      <Button variant="ghost" size="sm" onClick={() => void host()?.reveal?.(result.path)}>
+      <Button variant="ghost" size="sm" onClick={() => void ox.files.reveal(result.path)}>
         <FolderOpenIcon />
         Show in folder
       </Button>

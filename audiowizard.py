@@ -1,12 +1,10 @@
-"""audioWizard worker.
+"""audioWizard's actions.
 
-The page changes pitch, formant, and tempo live in Web Audio. The worker turns
-files into samples the page can play, and the page's renders back into files.
-Samples travel through the app's data folder as raw float32, one whole channel
-after another, so neither side has to copy them through JSON.
-
-``open`` and ``save`` are jobs the page polls, because a long file can take
-longer than one call is allowed to.
+The page changes pitch, formant, and tempo live in Web Audio. ``open_audio`` turns a
+file into samples the page can play, and ``save`` turns the page's render back
+into a file. Samples travel through the app's data folder as raw float32, one
+whole channel after another, so neither side has to copy them through JSON.
+The page calls both with ox.run; 0x1audio runs them in the background.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from ox1audio import job, library, run
+import ox1audio as ox
 
 from audio import decode, encode, free_path
 from wizard import detect_bpm, label, peaks
@@ -26,24 +24,30 @@ KEEP_TRACKS = 6
 FORMATS = ("wav", "aiff", "flac", "mp3")
 
 
-@job
-def open(call):
+@ox.action("Open audio", timeout=3600)
+def open_audio(path: ox.Files("audio", multiple=False)):
     """Decode a file into the data folder. The result says where its samples are."""
-    return _open(_source(_body(call).get("path")))
+    ox.progress(None, path.name)
+    return _open(str(path.resolve()))
 
 
-@job
-def save(call):
-    """Encode samples the page rendered into ``renders/`` and add the file to the Library."""
-    body = _body(call)
-    rendered = _data_file(body.get("samples"), "renders")
-    rate, channels = int(body.get("rate") or 0), int(body.get("channels") or 0)
-    if not 1000 <= rate <= 768000 or not 1 <= channels <= 32:
-        raise ValueError("Those samples are not audio.")
-    kind = body.get("format") if body.get("format") in FORMATS else "wav"
-    output = body.get("output")
-    name = label(_number(body.get("pitch")), _number(body.get("formant")), _number(body.get("tempo"), 1.0), _number(body.get("bpm")) or None)
-    return _save(rendered, rate, channels, _source(body.get("source")), kind, output if isinstance(output, str) and output else None, name)
+@ox.action("Save", timeout=3600)
+def save(
+    samples: str,
+    rate: ox.Number(1000, 768000),
+    channels: ox.Number(1, 32),
+    source: ox.Files("audio", multiple=False),
+    format: ox.Choice(*FORMATS) = "wav",
+    output: ox.Folder() | None = None,
+    pitch: float = 0.0,
+    formant: float = 0.0,
+    tempo: float = 1.0,
+    bpm: float | None = None,
+):
+    """Encode samples the page rendered into ``renders/``; the file goes to the Library."""
+    rendered = _data_file(samples, "renders")
+    name = label(_number(pitch), _number(formant), _number(tempo, 1.0), _number(bpm) or None)
+    return _save(rendered, rate, channels, str(source.resolve()), format, str(output) if output else None, name)
 
 
 def _open(path: str) -> dict:
@@ -88,8 +92,7 @@ def _save(rendered: Path, rate: int, channels: int, source: str, kind: str, outp
     folder = Path(output) if output else original.parent
     target = folder / f"{original.stem} ({name}).{kind}"
     written = encode(audio, rate, free_path(target, original), kind)
-    library.add("sound", written, written.stem)
-    return {"path": str(written), "name": written.name}
+    return ox.sound(written, title=written.stem)
 
 
 def _prune(folder: Path) -> None:
@@ -111,21 +114,8 @@ def _data_file(value, folder: str) -> Path:
     root = (_data() / folder).resolve()
     path = (_data() / str(value or "")).resolve()
     if path.parent != root or not path.is_file():
-        raise ValueError("Those samples are gone.")
+        raise ox.Problem("Those samples are gone.", hint="Export again.")
     return path
-
-
-def _body(call) -> dict:
-    return call.body if isinstance(call.body, dict) else {}
-
-
-def _source(value) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError("Choose an audio file.")
-    path = Path(value)
-    if not path.is_file():
-        raise ValueError(f"{path.name} is not there anymore.")
-    return str(path.resolve())
 
 
 def _number(value, fallback: float = 0.0) -> float:
@@ -135,6 +125,3 @@ def _number(value, fallback: float = 0.0) -> float:
         return fallback
     return number if np.isfinite(number) else fallback
 
-
-if __name__ == "__main__":
-    run()
