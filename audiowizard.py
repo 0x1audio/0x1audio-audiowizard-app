@@ -4,7 +4,7 @@ The page changes pitch, formant, and tempo live in Web Audio. ``open_audio`` tur
 file into samples the page can play, and ``save`` turns the page's render back
 into a file. Samples travel through the app's data folder as raw float32, one
 whole channel after another, so neither side has to copy them through JSON.
-The page calls both with ox.run; 0x1audio runs them in the background.
+The page calls both with ox.run; Mixel runs them in the background.
 """
 
 from __future__ import annotations

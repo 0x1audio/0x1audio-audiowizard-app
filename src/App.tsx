@@ -80,8 +80,9 @@ export function App() {
   const stopping = useRef(false)
 
   const dragging = useFileDrop((files) => {
-    if (!ox.available()) {
-      toast.error("Update 0x1audio to drop files here, or browse your Library.")
+    const missing = ox.unavailable()
+    if (missing) {
+      toast.error(missing.message)
       return
     }
     const paths = files.map((file) => ox.files.fromDrop(file)).filter(Boolean)
@@ -473,7 +474,8 @@ function ResultRow({ result, index }: { result: Saved; index: number }) {
     }
     try {
       if (!audio.current) {
-        if (!ox.available()) throw new Error("Reopen this app in 0x1audio.")
+        const missing = ox.unavailable()
+        if (missing) throw missing
         setBusy(true)
         const bytes = await ox.files.read(result.path)
         const node = new Audio(URL.createObjectURL(new Blob([bytes.slice()])))

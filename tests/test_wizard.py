@@ -95,7 +95,7 @@ class FilesTest(unittest.TestCase):
 
 
 class WorkerTest(unittest.TestCase):
-    """The two actions the page runs with ox.run, run here the way 0x1audio runs them."""
+    """The two actions the page runs with ox.run, run here the way Mixel runs them."""
 
     def setUp(self):
         shutil.rmtree(OUT, ignore_errors=True)

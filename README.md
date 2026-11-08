@@ -1,6 +1,6 @@
 # audioWizard
 
-An official 0x1audio app. Drop in audio and change its pitch, formant, and tempo, each on its own.
+An official Mixel app. Drop in audio and change its pitch, formant, and tempo, each on its own.
 
 - **Pitch** moves the notes up or down by up to 24 semitones and keeps the voice's character.
 - **Formant** moves the character of a voice (bigger or smaller, darker or brighter) by up to 12 semitones without moving the notes.
