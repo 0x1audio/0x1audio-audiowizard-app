@@ -6,7 +6,7 @@ An official 0x1audio app. Drop in audio and change its pitch, formant, and tempo
 - **Formant** moves the character of a voice (bigger or smaller, darker or brighter) by up to 12 semitones without moving the notes.
 - **BPM** is detected for you. Set a new BPM and the track speeds up or slows down without changing pitch. If the detector picks half or double time, use ½× or 2×.
 
-The waveform is the player. Every change is heard right away while it plays, and the waveform redraws to show the changed track over a faint copy of the original. Export to WAV, AIFF, FLAC, or MP3. Exports are named after the change, like `Song (pitch +3, formant -2, 128 BPM).wav`.
+The waveform is the player. Every change is heard right away while it plays, and the waveform redraws to show the changed track over a faint copy of the original. Export to WAV, AIFF, FLAC, or MP3. Exports are named after the change, like `Song (pitch +3, formant -2, 128 BPM).wav`, and are added to the Library. Cancel stops an export after the file in progress.
 
 ## How it works
 
@@ -22,4 +22,4 @@ pnpm build
 uv run --group dev python -m unittest discover tests
 ```
 
-The page is `src/` (`engine.ts` is the audio, `bridge.ts` talks to the worker), the worker is `audiowizard.py`, file reading and writing is `audio.py`, and tempo and waveform detection is `wizard.py`.
+The page is `src/` (`engine.ts` is the audio, `bridge.ts` talks to the worker, and `hero.tsx` is the header art), `icon.svg` is the card icon, the worker is `audiowizard.py`, file reading and writing is `audio.py`, and tempo and waveform detection is `wizard.py`.

@@ -1,2 +1,39 @@
 @import "tailwindcss";
 @import "@0x1audio/design-system/theme.css";
+
+/*
+  audioWizard: one beam of sound goes into a prism and comes out as three:
+  pitch, formant, and tempo. The brand is the violet in the middle. Only the
+  hero and the waveform carry it; everything else is the design system.
+*/
+[data-app="audiowizard"] {
+  --brand: oklch(0.55 0.22 292);
+  --brand-gradient: linear-gradient(100deg, oklch(0.72 0.14 210), oklch(0.56 0.23 292) 50%, oklch(0.66 0.22 350));
+  --beam-pitch: oklch(0.55 0.22 292);
+  --beam-formant: oklch(0.62 0.22 350);
+  --beam-tempo: oklch(0.64 0.12 215);
+
+  --hero-from: oklch(0.97 0.018 300);
+  --hero-to: oklch(0.955 0.025 275);
+  --hero-glow: oklch(0.88 0.08 300 / 70%);
+  --hero-ink: oklch(0.22 0.04 295);
+  --hero-muted: oklch(0.45 0.04 295);
+  --hero-beam: oklch(0.3 0.04 295);
+  --hero-prism: oklch(0.3 0.06 295);
+}
+
+.dark [data-app="audiowizard"] {
+  --brand: oklch(0.72 0.18 292);
+  --brand-gradient: linear-gradient(100deg, oklch(0.8 0.12 210), oklch(0.7 0.19 292) 50%, oklch(0.74 0.19 350));
+  --beam-pitch: oklch(0.72 0.19 292);
+  --beam-formant: oklch(0.74 0.19 350);
+  --beam-tempo: oklch(0.8 0.12 210);
+
+  --hero-from: oklch(0.18 0.04 295);
+  --hero-to: oklch(0.15 0.03 275);
+  --hero-glow: oklch(0.38 0.14 295 / 50%);
+  --hero-ink: oklch(0.97 0.01 300);
+  --hero-muted: oklch(0.8 0.03 300);
+  --hero-beam: oklch(0.97 0.01 300);
+  --hero-prism: oklch(0.92 0.04 300);
+}

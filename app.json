@@ -1,6 +1,9 @@
 {
   "name": "audiowizard",
   "displayName": "audioWizard",
+  "accent": "#7c4dff",
+  "icon": "icon.svg",
+  "window": {"width": 820, "height": 900, "minWidth": 560, "minHeight": 480},
   "version": "0.1.6",
   "sdk": "0.2.0",
   "permissions": ["files", "data", "library"],

@@ -1,32 +1,46 @@
-import { useEffect, useRef, useState } from "react"
-import { CheckCircleIcon, FileAudioIcon, PlusIcon, WarningCircleIcon, XIcon } from "@phosphor-icons/react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
+import {
+  ArrowCounterClockwiseIcon,
+  BooksIcon,
+  CheckCircleIcon,
+  FileAudioIcon,
+  FolderOpenIcon,
+  PauseIcon,
+  PlayIcon,
+  PlusIcon,
+  WarningCircleIcon,
+  XIcon,
+} from "@phosphor-icons/react"
 import {
   Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  Combobox,
-  Dropzone,
+  Callout,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   Input,
   Label,
   LibraryDialog,
+  PageSection,
+  Skeleton,
   Slider,
   Spinner,
+  Tabs,
+  TabsList,
+  TabsTab,
+  cn,
+  toast,
+  transition,
   useFileDrop,
 } from "@0x1audio/design-system"
 import { host } from "@0x1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
-import header from "./wizard-header.jpg"
-import mark from "./wizard-mark.jpg"
-import incoming from "./corner-in.jpg"
-import outgoing from "./corner-out.jpg"
-import { Wordmark } from "./wordmark.tsx"
 import { basename, channels, duration, rate } from "./drop.ts"
 import { isNeutral, Player, render, sketch, unchanged, type Change, type Samples } from "./engine.ts"
-import { Waveform } from "./wave.tsx"
+import { Hero } from "./hero.tsx"
+import { DropOverlay, Intake, SaveTo, Working } from "./parts.tsx"
+import { Waveform, WaveformSkeleton } from "./wave.tsx"
 
 interface Track {
   path: string
@@ -39,11 +53,16 @@ interface Track {
   formant: number
 }
 
+type Export =
+  | { state: "idle" }
+  | { state: "working"; label: string; progress: number; stopping: boolean }
+  | { state: "failed"; message: string }
+
 const formats = [
-  { value: "wav", label: "WAV, 24-bit" },
-  { value: "aiff", label: "AIFF, 24-bit" },
-  { value: "flac", label: "FLAC, 24-bit" },
-  { value: "mp3", label: "MP3, 320 kb/s" },
+  { value: "wav", label: "WAV", detail: "24-bit, lossless." },
+  { value: "aiff", label: "AIFF", detail: "24-bit, lossless." },
+  { value: "flac", label: "FLAC", detail: "24-bit, lossless and smaller." },
+  { value: "mp3", label: "MP3", detail: "320 kb/s. Smallest, plays anywhere." },
 ]
 
 export function App() {
@@ -53,16 +72,17 @@ export function App() {
   const [rough, setRough] = useState<Samples | null>(null)
   const [format, setFormat] = useState("wav")
   const [output, setOutput] = useState("")
-  const [busy, setBusy] = useState("")
+  const [exporting, setExporting] = useState<Export>({ state: "idle" })
   const [results, setResults] = useState<Saved[]>([])
   const [message, setMessage] = useState("")
   const [library, setLibrary] = useState(false)
   const loaded = useRef<{ path: string; samples: Samples } | null>(null)
+  const stopping = useRef(false)
 
   const dragging = useFileDrop((files) => {
     const bridge = host()
     if (!bridge?.pathFor) {
-      setMessage("Update 0x1audio to drop files here, or browse your Library.")
+      toast.error("Update 0x1audio to drop files here, or browse your Library.")
       return
     }
     const paths = files.map((file) => bridge.pathFor?.(file) ?? "").filter(Boolean)
@@ -70,6 +90,7 @@ export function App() {
   })
   const track = tracks.find((item) => item.path === selected) ?? tracks[0]
   const change = track ? changeOf(track) : null
+  const working = exporting.state === "working"
 
   function update(path: string, patch: Partial<Track>) {
     setTracks((current) => current.map((item) => (item.path === path ? { ...item, ...patch } : item)))
@@ -79,30 +100,38 @@ export function App() {
     const fresh = [...new Set(paths)].filter((path) => !tracks.some((item) => item.path === path))
     if (!fresh.length) return
     setMessage("")
-    setTracks((current) => [
-      ...current,
-      ...fresh.map((path) => ({ path, name: basename(path), sourceBpm: "", targetBpm: "", pitch: 0, formant: 0 })),
-    ])
-    setSelected(fresh[0])
-    for (const path of fresh) {
-      open(path).then(
-        (opened) => {
-          const bpm = opened.bpm ? String(opened.bpm) : ""
-          update(path, { opened, sourceBpm: bpm, targetBpm: bpm })
-        },
-        (error: unknown) => update(path, { error: problem(error, "Could not read this file.") }),
-      )
-    }
+    // The files are opened only once they are in the list, so a quick answer always has a row to land on.
+    transition(() => {
+      setTracks((current) => [
+        ...current,
+        ...fresh.map((path) => ({ path, name: basename(path), sourceBpm: "", targetBpm: "", pitch: 0, formant: 0 })),
+      ])
+      setSelected(fresh[0])
+      for (const path of fresh) {
+        open(path).then(
+          (opened) => {
+            const bpm = opened.bpm ? String(opened.bpm) : ""
+            update(path, { opened, sourceBpm: bpm, targetBpm: bpm })
+          },
+          (error: unknown) => update(path, { error: problem(error, "This file couldn't be read.") }),
+        )
+      }
+    })
   }
 
   function remove(path: string) {
-    setTracks((current) => current.filter((item) => item.path !== path))
-    if (selected === path) setSelected("")
+    const next = tracks.filter((item) => item.path !== path)
+    const go = () => {
+      setTracks(next)
+      if (selected === path) setSelected(next[0]?.path ?? "")
+    }
+    if (next.length) go()
+    else transition(go)
   }
 
-  async function chooseFolder() {
-    const picked = await host()?.pick?.("folder")
-    if (picked?.[0]) setOutput(picked[0])
+  async function choose() {
+    const picked = await host()?.pick?.("file")
+    if (picked?.length) add(picked)
   }
 
   // One player at a time, for the selected track. Its settings follow the controls live.
@@ -121,7 +150,7 @@ export function App() {
         if (live) setPlayer(made)
         else made.close()
       } catch (error) {
-        if (live) setMessage(problem(error, "Could not play this file."))
+        if (live) setMessage(problem(error, "This file couldn't be played."))
       }
     })()
     return () => {
@@ -148,7 +177,10 @@ export function App() {
       const current = playback.current
       if (!current) return
       if (current.playing) current.pause()
-      else current.play()
+      else {
+        window.dispatchEvent(new CustomEvent("track-play", { detail: "editor" }))
+        current.play()
+      }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
@@ -157,17 +189,26 @@ export function App() {
   async function exportTracks(items: Track[]) {
     const ready = items.filter((item) => item.opened)
     const wrong = ready.find((item) => !changeOf(item))
-    if (wrong) return setMessage(`${wrong.name}: keep the new BPM between a quarter and four times the original.`)
-    setMessage("")
+    if (wrong) {
+      setExporting({ state: "failed", message: `${wrong.name}: keep the new BPM between a quarter and four times the original.` })
+      return
+    }
+    stopping.current = false
+    const steps = ready.length * 2
+    const step = (done: number, label: string) =>
+      setExporting((current) => ({ state: "working", label, progress: done / steps, stopping: current.state === "working" && current.stopping }))
+    let finished = 0
     try {
       for (const [index, item] of ready.entries()) {
+        if (stopping.current) break
         const opened = item.opened as Opened
         const settings = changeOf(item) as Change
         const counter = ready.length > 1 ? ` (${index + 1} of ${ready.length})` : ""
-        setBusy(`Changing ${item.name}${counter}`)
+        step(index * 2, `Changing ${item.name}${counter}`)
         const samples = loaded.current?.path === item.path ? loaded.current.samples : await load(opened)
         const changed = isNeutral(settings) ? samples.channels : await render(samples, settings)
-        setBusy(`Saving ${item.name}${counter}`)
+        if (stopping.current) break
+        step(index * 2 + 1, `Saving ${item.name}${counter}`)
         const saved = await save(changed, {
           ...settings,
           rate: opened.rate,
@@ -176,170 +217,291 @@ export function App() {
           output,
           bpm: settings.tempo !== 1 ? Number(item.targetBpm) || null : null,
         })
-        setResults((current) => [saved, ...current])
+        finished += 1
+        setResults((current) => [saved, ...current.filter((result) => result.path !== saved.path)])
       }
+      if (stopping.current) {
+        toast("Stopped", { description: finished ? `${finished} of ${ready.length} saved.` : "Nothing was saved." })
+      }
+      setExporting({ state: "idle" })
     } catch (error) {
-      setMessage(problem(error, "Something went wrong."))
-    } finally {
-      setBusy("")
+      setExporting({ state: "failed", message: problem(error, "The export didn't finish. Try again.") })
     }
   }
 
+  function stop() {
+    stopping.current = true
+    setExporting((current) => (current.state === "working" ? { ...current, stopping: true } : current))
+  }
+
   const ready = tracks.filter((item) => item.opened)
-  const working = busy !== ""
+  const detail = formats.find((item) => item.value === format)?.detail
 
   return (
-    <div className="relative min-h-svh overflow-hidden bg-background text-foreground">
-      <header className="relative h-24">
-        <img src={header} alt="" className="pointer-events-none absolute inset-0 size-full object-cover object-center" />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-black/20 to-background" />
-      </header>
-      <img src={incoming} alt="" className="pointer-events-none absolute bottom-0 left-0 h-40 w-[36rem] max-w-none translate-y-8 object-cover object-left opacity-90 [mask-image:linear-gradient(to_right,black_62%,transparent)]" />
-      <img src={outgoing} alt="" className="pointer-events-none absolute right-0 bottom-0 h-56 w-[36rem] max-w-none translate-y-10 object-cover object-[right_center] opacity-90 [mask-image:linear-gradient(to_left,black_55%,transparent)]" />
-      <main className="relative z-10 mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 pt-3 pb-10">
-        <div className="flex flex-col items-center gap-2 text-center">
-          <h1 className="flex items-center gap-4">
-            <img src={mark} alt="" className="size-16 rounded-full object-cover" />
-            <Wordmark className="h-12" />
-          </h1>
-          <p className="text-sm text-muted-foreground">Change pitch, formant, and tempo, each one on its own.</p>
-        </div>
+    <div data-app="audiowizard" className="min-h-svh bg-background text-foreground">
+      <div className="mx-auto flex min-h-svh w-full max-w-3xl flex-col gap-8 px-8 pt-6 pb-10 max-sm:px-4 max-sm:pt-4">
+        <Hero />
 
-      {tracks.length === 0 ? (
-        <Dropzone
-          description="Drop as many files as you like. Each one keeps its own settings."
-          dragging={dragging}
-          multiple
-          onChoose={add}
-        />
-      ) : (
-        <section className="flex flex-col gap-2">
-          <ul className="flex flex-col gap-2">
-            {tracks.map((item) => (
-              <li key={item.path}>
-                <div
-                  className={`relative flex items-center gap-3 rounded-xl bg-card px-4 py-3 ${item.path === track?.path ? "before:absolute before:inset-y-3 before:left-1.5 before:w-1 before:rounded-full before:bg-[var(--button-inverted)]" : ""}`}
-                >
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
-                    onClick={() => setSelected(item.path)}
-                  >
-                    {item.error ? (
-                      <WarningCircleIcon size={20} className="shrink-0 text-destructive" />
-                    ) : item.opened ? (
-                      <FileAudioIcon size={20} className="shrink-0 text-muted-foreground" />
-                    ) : (
-                      <Spinner className="size-5 shrink-0" />
-                    )}
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-sm font-medium">{item.name}</span>
-                      <span className={`truncate text-xs ${item.error ? "text-destructive" : "text-muted-foreground"}`}>{summary(item)}</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${item.name}`}
-                    disabled={working}
-                    className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--button-neutral-hover)] hover:text-foreground disabled:opacity-50"
-                    onClick={() => remove(item.path)}
-                  >
-                    <XIcon size={16} />
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <Button variant="outline" className={`self-start ${dragging ? "bg-[var(--bg-field)]" : ""}`} onClick={() => setLibrary(true)}>
-            <PlusIcon size={16} />
-            {dragging ? "Drop to add" : "Add audio"}
-          </Button>
-          <LibraryDialog open={library} multiple onOpenChange={setLibrary} onPick={add} />
-        </section>
-      )}
-
-      {track?.opened ? (
-        <>
-          <Waveform
-            player={player}
-            rough={rough}
-            peaks={track.opened.peaks}
-            duration={track.opened.frames / track.opened.rate}
-            change={change ?? unchanged}
+        {tracks.length === 0 ? (
+          <Intake
+            title="Drop audio here"
+            description="Change the notes, the character of a voice, or the tempo, each on its own. Add as many files as you like."
+            dragging={dragging}
+            multiple
+            onChoose={add}
           />
-          <Editor key={track.path} track={track} disabled={working} onChange={(patch) => update(track.path, patch)} />
-        </>
-      ) : null}
+        ) : (
+          <main className="flex animate-enter flex-col gap-6">
+            <PageSection
+              className="py-0"
+              title="Files"
+              actions={
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="-my-2 -mr-2.5" disabled={working} />}>
+                    <PlusIcon />
+                    Add audio
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem onClick={() => void choose()}>
+                      <FileAudioIcon />
+                      Choose files…
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setLibrary(true)}>
+                      <BooksIcon />
+                      From your Library…
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              }
+            >
+              <ul className="flex flex-col gap-1">
+                {tracks.map((item) => (
+                  <FileRow
+                    key={item.path}
+                    track={item}
+                    selected={item.path === track?.path}
+                    disabled={working}
+                    onSelect={() => {
+                      setSelected(item.path)
+                      setMessage("")
+                    }}
+                    onRemove={() => remove(item.path)}
+                  />
+                ))}
+              </ul>
+              <LibraryDialog open={library} multiple onOpenChange={setLibrary} onPick={add} />
+            </PageSection>
 
-      {ready.length ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Export</CardTitle>
-            <CardDescription>Saved next to each original unless you pick a folder. Nothing is overwritten.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label>Format</Label>
-              <Combobox items={formats} value={format} onValueChange={(value) => setFormat(value || "wav")} />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label>Folder</Label>
-              <div className="flex gap-2">
-                <div className="flex h-10 min-w-0 flex-1 items-center rounded-lg bg-[var(--bg-field)] px-4 text-sm">
-                  <span className="truncate text-muted-foreground">{output || "Same folder as each file"}</span>
-                </div>
-                {output ? (
-                  <Button variant="outline" disabled={working} onClick={() => setOutput("")}>
-                    Reset
+            {track?.error ? (
+              <Callout
+                tone="danger"
+                icon={<WarningCircleIcon />}
+                title={`${track.name} couldn't be opened`}
+                actions={
+                  <Button variant="outline" size="sm" onClick={() => remove(track.path)}>
+                    Remove it
                   </Button>
+                }
+              >
+                {track.error}
+              </Callout>
+            ) : track?.opened ? (
+              <>
+                <Waveform
+                  player={player}
+                  rough={rough}
+                  peaks={track.opened.peaks}
+                  duration={track.opened.frames / track.opened.rate}
+                  change={change ?? unchanged}
+                />
+                {message ? (
+                  <Callout tone="warning" icon={<WarningCircleIcon />} title="This file can't play here">
+                    {message}
+                  </Callout>
                 ) : null}
-                <Button variant="outline" disabled={working} onClick={() => void chooseFolder()}>
-                  Choose
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
+                <Editor key={track.path} track={track} disabled={working} onChange={(patch) => update(track.path, patch)} />
+              </>
+            ) : (
+              <>
+                <WaveformSkeleton />
+                <EditorSkeleton />
+              </>
+            )}
 
-      {ready.length ? (
-        <div className="flex gap-2">
-          {track?.opened ? (
-            <Button className="h-12 flex-1 text-base" disabled={working} onClick={() => void exportTracks([track])}>
-              Export {ready.length > 1 ? "this one" : ""}
-            </Button>
-          ) : null}
-          {ready.length > 1 ? (
-            <Button variant="outline" className="h-12 flex-1 text-base" disabled={working} onClick={() => void exportTracks(ready)}>
-              Export all {ready.length}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
+            {ready.length ? (
+              <PageSection className="py-0" title="Export" description="Saved as a new file. Nothing is overwritten.">
+                <div className="flex flex-col gap-5 rounded-2xl bg-card p-5">
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <div role="group" aria-labelledby="format" className="flex min-w-0 flex-col gap-2">
+                      <p id="format" className="text-sm leading-none font-medium">
+                        Format
+                      </p>
+                      <Tabs value={format} onValueChange={(value) => setFormat(String(value))}>
+                        <TabsList className="w-full">
+                          {formats.map((item) => (
+                            <TabsTab key={item.value} value={item.value} disabled={working} className="px-2">
+                              {item.label}
+                            </TabsTab>
+                          ))}
+                        </TabsList>
+                      </Tabs>
+                      <p className="text-[13px] text-muted-foreground">{detail}</p>
+                    </div>
+                    <SaveTo folder={output} disabled={working} onChange={setOutput} fallback="Next to each original" />
+                  </div>
 
-      {working ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Spinner className="size-4" />
-          {busy}…
-        </p>
-      ) : null}
-      {message ? <p className="text-sm">{message}</p> : null}
+                  {exporting.state === "working" ? (
+                    <Working
+                      progress={exporting.progress}
+                      label={exporting.label}
+                      stopping={exporting.stopping}
+                      stoppingLabel="Stopping after this file"
+                      note="The originals stay as they are."
+                      onCancel={stop}
+                    />
+                  ) : (
+                    <div className="flex gap-2 max-sm:flex-col">
+                      {track?.opened ? (
+                        <Button size="lg" className="w-full sm:w-auto sm:flex-1" onClick={() => void exportTracks([track])}>
+                          {ready.length > 1 ? "Export this file" : "Export"}
+                        </Button>
+                      ) : null}
+                      {ready.length > 1 ? (
+                        <Button size="lg" variant="outline" className="w-full sm:w-auto sm:flex-1" onClick={() => void exportTracks(ready)}>
+                          Export all {ready.length}
+                        </Button>
+                      ) : null}
+                    </div>
+                  )}
+                  {exporting.state === "failed" ? (
+                    <Callout tone="danger" icon={<WarningCircleIcon />} title="The export didn't finish">
+                      {exporting.message}
+                    </Callout>
+                  ) : null}
+                </div>
+              </PageSection>
+            ) : null}
 
-      {results.length ? (
-        <ul className="flex flex-col gap-2">
-          {results.map((item) => (
-            <li key={item.path} className="flex items-center gap-3 rounded-xl bg-card px-4 py-3">
-              <CheckCircleIcon size={20} weight="fill" className="shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-sm">{item.name}</span>
-              <Button variant="link" className="h-8 px-0" onClick={() => void host()?.reveal?.(item.path)}>
-                Show in folder
-              </Button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      </main>
+            {results.length ? (
+              <PageSection className="py-0" title="Exported" description="Each file is also in your Library.">
+                <ul className="stagger flex flex-col gap-1">
+                  {results.map((item, index) => (
+                    <ResultRow key={item.path} result={item} index={index} />
+                  ))}
+                </ul>
+              </PageSection>
+            ) : null}
+          </main>
+        )}
+      </div>
+      {dragging ? <DropOverlay label="Drop to add" /> : null}
     </div>
+  )
+}
+
+function FileRow({
+  track,
+  selected,
+  disabled,
+  onSelect,
+  onRemove,
+}: {
+  track: Track
+  selected: boolean
+  disabled: boolean
+  onSelect: () => void
+  onRemove: () => void
+}) {
+  return (
+    <li className={cn("group flex h-12 items-center gap-1 rounded-lg pr-1.5 hover:bg-hover", selected && "bg-selected hover:bg-selected")}>
+      <button
+        type="button"
+        aria-current={selected || undefined}
+        className="flex h-full min-w-0 flex-1 items-center gap-3 rounded-lg px-3 text-left"
+        onClick={onSelect}
+      >
+        {track.error ? (
+          <WarningCircleIcon size={16} className="shrink-0 text-destructive" />
+        ) : track.opened ? (
+          <FileAudioIcon size={16} className={cn("shrink-0", selected ? "text-brand" : "text-muted-foreground")} />
+        ) : (
+          <Spinner className="shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{track.name}</span>
+        <span className={cn("shrink-0 truncate text-[13px] tabular-nums max-sm:hidden", track.error ? "text-destructive" : "text-muted-foreground")}>
+          {summary(track)}
+        </span>
+      </button>
+      <Button variant="ghost" size="icon-sm" aria-label={`Remove ${track.name}`} disabled={disabled} onClick={onRemove}>
+        <XIcon />
+      </Button>
+    </li>
+  )
+}
+
+function ResultRow({ result, index }: { result: Saved; index: number }) {
+  const audio = useRef<HTMLAudioElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const id = result.path
+  // Browsers can't play AIFF, so those files only offer their folder.
+  const playable = !/\.aiff?$/i.test(result.path)
+
+  useEffect(() => {
+    const onPlay = (event: Event) => {
+      if (event instanceof CustomEvent && event.detail !== id) audio.current?.pause()
+    }
+    window.addEventListener("track-play", onPlay)
+    return () => {
+      window.removeEventListener("track-play", onPlay)
+      const node = audio.current
+      if (node) {
+        node.pause()
+        URL.revokeObjectURL(node.src)
+      }
+    }
+  }, [id])
+
+  async function toggle() {
+    if (audio.current && !audio.current.paused) {
+      audio.current.pause()
+      return
+    }
+    try {
+      if (!audio.current) {
+        const read = host()?.readFile
+        if (!read) throw new Error("Reopen this app in 0x1audio.")
+        setBusy(true)
+        const bytes = await read(result.path)
+        const node = new Audio(URL.createObjectURL(new Blob([bytes.slice()])))
+        node.onplay = () => setPlaying(true)
+        node.onpause = () => setPlaying(false)
+        node.onended = () => setPlaying(false)
+        audio.current = node
+      }
+      window.dispatchEvent(new CustomEvent("track-play", { detail: id }))
+      await audio.current.play()
+    } catch (error) {
+      toast.error(problem(error, "This file can't be played here."), { description: "Show it in its folder to open it." })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <li className="flex h-12 items-center gap-3 rounded-lg pr-1.5 pl-3 hover:bg-hover" style={{ "--i": index } as CSSProperties}>
+      <CheckCircleIcon size={16} weight="fill" className="shrink-0 text-success" />
+      <span className="min-w-0 flex-1 truncate text-sm">{result.name}</span>
+      {playable ? (
+        <Button variant="ghost" size="icon-sm" aria-label={playing ? `Pause ${result.name}` : `Play ${result.name}`} disabled={busy} onClick={() => void toggle()}>
+          {busy ? <Spinner /> : playing ? <PauseIcon weight="fill" /> : <PlayIcon weight="fill" />}
+        </Button>
+      ) : null}
+      <Button variant="ghost" size="sm" onClick={() => void host()?.reveal?.(result.path)}>
+        <FolderOpenIcon />
+        Show in folder
+      </Button>
+    </li>
   )
 }
 
@@ -355,75 +517,118 @@ function Editor({ track, disabled, onChange }: { track: Track; disabled: boolean
   }
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-4">
-        <CardTitle>Change</CardTitle>
+    <PageSection
+      className="py-0"
+      title="Change"
+      description="You hear every change as it plays."
+      actions={
         <Button
-          variant="link"
-          className="h-6 px-0"
+          variant="ghost"
+          size="sm"
+          className="-my-2 -mr-2.5"
           disabled={disabled || !changed}
           onClick={() => onChange({ pitch: 0, formant: 0, targetBpm: track.sourceBpm })}
         >
+          <ArrowCounterClockwiseIcon />
           Reset
         </Button>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
-        <Semitones label="Pitch" value={track.pitch} min={-24} max={24} disabled={disabled} onChange={(pitch) => onChange({ pitch })} />
-        <Semitones label="Formant" value={track.formant} min={-12} max={12} disabled={disabled} onChange={(formant) => onChange({ formant })} />
+      }
+    >
+      <div className="flex flex-col gap-6 rounded-2xl bg-card p-5">
+        <Semitones label="Pitch" hint="Moves the notes." value={track.pitch} min={-24} max={24} disabled={disabled} onChange={(pitch) => onChange({ pitch })} />
+        <Semitones
+          label="Formant"
+          hint="Makes a voice sound bigger or smaller."
+          value={track.formant}
+          min={-12}
+          max={12}
+          disabled={disabled}
+          onChange={(formant) => onChange({ formant })}
+        />
 
-        <div className="grid grid-cols-2 gap-4">
-          <div className="flex flex-col gap-2">
-            <Label>Original BPM</Label>
-            <div className="flex gap-2">
+        <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="source-bpm">Original BPM</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="source-bpm"
+                  type="number"
+                  inputMode="decimal"
+                  min={20}
+                  max={400}
+                  step={0.01}
+                  placeholder="Unknown"
+                  className="tabular-nums"
+                  value={track.sourceBpm}
+                  disabled={disabled}
+                  onChange={(event) => onChange({ sourceBpm: event.target.value })}
+                />
+                <Button variant="outline" className="px-3" aria-label="Half the original BPM" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(0.5)}>
+                  ½×
+                </Button>
+                <Button variant="outline" className="px-3" aria-label="Double the original BPM" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(2)}>
+                  2×
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="target-bpm">New BPM</Label>
               <Input
+                id="target-bpm"
                 type="number"
                 inputMode="decimal"
                 min={20}
                 max={400}
                 step={0.01}
-                placeholder="Unknown"
-                value={track.sourceBpm}
-                disabled={disabled}
-                onChange={(event) => onChange({ sourceBpm: event.target.value })}
+                placeholder={track.sourceBpm ? track.sourceBpm : "Set the original first"}
+                className="tabular-nums"
+                aria-invalid={!settings || undefined}
+                value={track.targetBpm}
+                disabled={disabled || !track.sourceBpm}
+                onChange={(event) => onChange({ targetBpm: event.target.value })}
               />
-              <Button variant="outline" className="px-3" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(0.5)}>
-                ½×
-              </Button>
-              <Button variant="outline" className="px-3" disabled={disabled || !track.sourceBpm} onClick={() => scaleSource(2)}>
-                2×
-              </Button>
             </div>
           </div>
-          <div className="flex flex-col gap-2">
-            <Label>New BPM</Label>
-            <Input
-              type="number"
-              inputMode="decimal"
-              min={20}
-              max={400}
-              step={0.01}
-              placeholder={track.sourceBpm ? track.sourceBpm : "Set the original first"}
-              value={track.targetBpm}
-              disabled={disabled || !track.sourceBpm}
-              onChange={(event) => onChange({ targetBpm: event.target.value })}
-            />
-          </div>
+          <p className={cn("text-[13px]", settings ? "text-muted-foreground" : "text-destructive")}>
+            {!settings
+              ? "Keep the new BPM between a quarter and four times the original."
+              : [
+                  track.opened?.bpm ? `Found ${track.opened.bpm} BPM.` : "No clear beat found. Type the BPM if you know it.",
+                  settings.tempo !== 1 ? `Plays at ${Math.round(settings.tempo * 1000) / 10}% speed.` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+          </p>
         </div>
-        <p className="-mt-3 text-xs text-muted-foreground">
-          {track.opened?.bpm ? `Detected ${track.opened.bpm} BPM.` : "No clear beat found. Type the BPM if you know it."}{" "}
-          {!settings
-            ? "Keep the new BPM between a quarter and four times the original."
-            : settings.tempo !== 1
-              ? `Plays at ${Math.round(settings.tempo * 1000) / 10}% speed.`
-              : ""}
-        </p>
-      </CardContent>
-    </Card>
+      </div>
+    </PageSection>
+  )
+}
+
+function EditorSkeleton() {
+  return (
+    <div aria-hidden className="flex flex-col gap-6 rounded-2xl bg-card p-5">
+      {[0, 1].map((index) => (
+        <div key={index} className="flex flex-col gap-3">
+          <div className="flex justify-between">
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-4 w-24" />
+          </div>
+          <Skeleton className="h-1.5 w-full rounded-full" />
+        </div>
+      ))}
+      <div className="grid grid-cols-2 gap-4">
+        <Skeleton className="h-9" />
+        <Skeleton className="h-9" />
+      </div>
+    </div>
   )
 }
 
 function Semitones({
   label,
+  hint,
   value,
   min,
   max,
@@ -431,6 +636,7 @@ function Semitones({
   onChange,
 }: {
   label: string
+  hint: string
   value: number
   min: number
   max: number
@@ -440,13 +646,18 @@ function Semitones({
   const shown = value === 0 ? "0" : `${value > 0 ? "+" : "−"}${Math.abs(value)}`
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between text-sm">
-        <Label>{label}</Label>
-        <span className="text-muted-foreground">
+      <div className="flex items-baseline justify-between gap-4">
+        <p className="flex items-baseline gap-2">
+          <span className="text-sm font-medium">{label}</span>
+          <span className="text-[13px] text-muted-foreground max-sm:hidden">{hint}</span>
+        </p>
+        <span className="text-sm text-muted-foreground tabular-nums">
           {shown} {Math.abs(value) === 1 ? "semitone" : "semitones"}
         </span>
       </div>
       <Slider
+        className="data-disabled:opacity-50"
+        aria-label={label}
         value={value}
         min={min}
         max={max}
@@ -468,7 +679,7 @@ function changeOf(track: Track): Change | null {
 }
 
 function summary(track: Track) {
-  if (track.error) return track.error
+  if (track.error) return "Couldn't be opened"
   if (!track.opened) return "Reading…"
   const { bpm, rate: hz, channels: count, frames } = track.opened
   return [bpm ? `${bpm} BPM` : "", rate(hz), channels(count), duration(frames / hz)].filter(Boolean).join(" · ")
