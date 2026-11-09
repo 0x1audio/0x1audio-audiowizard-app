@@ -137,6 +137,25 @@ class WorkerTest(unittest.TestCase):
             self.assertLessEqual(float(np.abs(back).max()), 1.0)
         self.assertEqual(names, ["Song (pitch +3, formant -2, 128 BPM).flac", "Song (pitch +3, formant -2, 128 BPM) (1).flac"])
 
+    def test_mp3_export_leaves_no_overs_between_samples(self):
+        # GAB-137: a hot render, peak-normalised by sample, decodes over 0 dBFS from an MP3.
+        import ox1audio as ox
+        import audiowizard as worker
+        from audio import true_peak
+
+        t = np.arange(RATE * 2) / RATE
+        # A quarter-rate sine at 45 degrees: every sample is 0.707 of the true peak.
+        tricky = np.sin(2 * np.pi * (RATE / 4) * t + np.pi / 4)
+        self.assertAlmostEqual(true_peak(np.stack([tricky, tricky]) * 0.7), 0.7, delta=0.01)
+        dense = np.clip(drums(120, 4) * 8, -1.4, 1.4).astype(np.float32)  # saturated, the worst case
+        rendered = OUT / "data" / "renders" / "hot.f32"
+        rendered.parent.mkdir(parents=True, exist_ok=True)
+        dense.tofile(rendered)
+        song = str(OUT / "Song.wav")
+        run = ox.test(worker.save, samples="renders/hot.f32", rate=RATE, channels=2, source=song, format="mp3", pitch=0, formant=0, tempo=1, bpm=120)
+        back, _ = decode(run["result"]["items"][0]["path"])
+        self.assertLess(float(np.abs(back).max()), 1.0, "the decoded MP3 stays under full scale")
+
     def test_refuses_files_outside_renders(self):
         import ox1audio as ox
         import audiowizard as worker

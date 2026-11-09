@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import ox1audio as ox
 
-from audio import decode, encode, free_path
+from audio import decode, encode, free_path, true_peak
 from wizard import detect_bpm, label, peaks
 
 KEEP_TRACKS = 6
@@ -85,9 +85,14 @@ def _save(rendered: Path, rate: int, channels: int, source: str, kind: str, outp
     finally:
         rendered.unlink(missing_ok=True)
     audio = audio[: audio.size // channels * channels].reshape(channels, -1)
-    peak = float(np.abs(audio).max()) if audio.size else 0.0
-    if peak > 0.999:
-        audio *= 0.999 / peak
+    # Lossless files hold up to full scale. A lossy file's decoder overshoots between samples, so
+    # MP3, AAC and Ogg get a true-peak ceiling of -1 dBTP instead (GAB-137). One gain, never a limiter.
+    lossy = kind not in ("wav", "aiff", "flac")
+    ceiling = 10 ** (-1 / 20) if lossy else 0.999
+    peak = true_peak(audio) if lossy else (float(np.abs(audio).max()) if audio.size else 0.0)
+    if peak > ceiling:
+        audio *= ceiling / peak
+        print(f"Lowered {20 * np.log10(peak / ceiling):.1f} dB so it doesn't clip.")
     original = Path(source)
     folder = Path(output) if output else original.parent
     target = folder / f"{original.stem} ({name}).{kind}"
