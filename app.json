@@ -3,7 +3,7 @@
   "name": "audiowizard",
   "displayName": "Pitch & Tempo",
   "summary": "Change pitch, formant and tempo, each on its own.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "sdk": "^0.3",
   "license": "Apache-2.0",
   "entry": "audiowizard.py",
@@ -13,7 +13,7 @@
     "data": "Keep the decoded audio on this computer while you work.",
     "library": "Add the changed copies to your Library."
   },
-  "accent": "#7c4dff",
+  "accent": "#7c7fe5",
   "icon": "icon.svg",
   "window": { "width": 820, "height": 900, "minWidth": 560, "minHeight": 480 },
   "tags": ["pitch", "tempo"]
