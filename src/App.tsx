@@ -666,6 +666,8 @@ function Semitones({
         value={value}
         min={min}
         max={max}
+        // 0 semitones is no change: the track fills from the centre (GAB-86).
+        origin={0}
         step={0.5}
         disabled={disabled}
         onValueChange={(next) => onChange(typeof next === "number" ? next : next[0])}
