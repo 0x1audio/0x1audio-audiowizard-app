@@ -5,7 +5,7 @@ import { ox } from "@0x1audio/sdk/page"
 
 import { basename } from "./drop.ts"
 
-// The same pieces SonicDryer and Vocal Extractor use, so the official apps feel alike.
+// The same pieces De-reverb and Vocal Extractor use, so the official apps feel alike.
 
 // The first screen: nothing chosen yet. Choose a file or take one from the Library.
 export function Intake({

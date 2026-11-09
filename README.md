@@ -1,4 +1,4 @@
-# audioWizard
+# Pitch & Tempo
 
 An official Mixel app. Drop in audio and change its pitch, formant, and tempo, each on its own.
 

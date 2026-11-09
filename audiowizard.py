@@ -1,4 +1,4 @@
-"""audioWizard's actions.
+"""Pitch & Tempo's actions.
 
 The page changes pitch, formant, and tempo live in Web Audio. ``open_audio`` turns a
 file into samples the page can play, and ``save`` turns the page's render back

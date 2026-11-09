@@ -65,7 +65,7 @@ export function Hero() {
       <div className="relative flex h-full flex-col justify-center gap-2.5 px-8 max-sm:px-6">
         <h1 className="flex items-center gap-3 text-(--hero-ink)">
           <img src={icon} alt="" className="size-10 rounded-[10px] shadow-sm" />
-          <Wordmark className="h-7 w-auto max-sm:h-6" />
+          <Wordmark />
         </h1>
         <p className="text-sm text-(--hero-muted) max-sm:max-w-60">Change pitch, formant, and tempo, each on its own.</p>
       </div>
