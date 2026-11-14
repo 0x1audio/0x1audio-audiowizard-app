@@ -19,7 +19,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   Input,
-  Label,
   LibraryDialog,
   PageSection,
   Skeleton,
@@ -30,15 +29,16 @@ import {
   TabsTab,
   cn,
   toast,
-  transition,
   useFileDrop,
-} from "@0x1audio/design-system"
-import { ox } from "@0x1audio/sdk/page"
+} from "@ox1audio/design-system"
+import { ox } from "@ox1audio/sdk/page"
 
 import { load, open, save, type Opened, type Saved } from "./bridge.ts"
 import { basename, channels, duration, rate } from "./drop.ts"
 import { isNeutral, Player, render, sketch, unchanged, type Change, type Samples } from "./engine.ts"
 import { Hero } from "./hero.tsx"
+import { Label } from "./label.tsx"
+import { transition } from "./motion.ts"
 import { DropOverlay, Intake, SaveTo, Working } from "./parts.tsx"
 import { Waveform, WaveformSkeleton } from "./wave.tsx"
 

@@ -1,4 +1,4 @@
-import { ox, type Exported } from "@0x1audio/sdk/page"
+import { ox, type Exported } from "@ox1audio/sdk/page"
 
 import type { Change, Samples } from "./engine.ts"
 

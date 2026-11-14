@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { PauseIcon, PlayIcon } from "@phosphor-icons/react"
-import { Button, Kbd, Skeleton } from "@0x1audio/design-system"
+import { Button, Kbd, Skeleton } from "@ox1audio/design-system"
 import WaveSurfer, { type WaveSurferOptions } from "wavesurfer.js"
 
 import { duration as clock } from "./drop.ts"
